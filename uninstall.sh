@@ -5,7 +5,7 @@ for d in /data/adb/qwennhide /data/local/tmp/qwennhide; do
     [ -e "$d" ] && rm -rf "$d"
 done
 
-# Defensive unmount of any global bind-mounts from older versions
+# Defensive unmount
 for p in \
     /system/bin/su /system/xbin/su /sbin/su \
     /system/bin/.magisk /system/bin/magisk \
