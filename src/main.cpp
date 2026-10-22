@@ -1,10 +1,7 @@
 #include "zygisk.hpp"
 #include "mount_utils.h"
 #include "proc_filter.h"
-#include "denylist_reader.h"
 #include <string>
-#include <vector>
-#include <unistd.h>
 #include <android/log.h>
 
 #define LOG_TAG "MyRootHider"
@@ -18,11 +15,6 @@ public:
         this->api = api;
         this->env = env;
         LOGI("MyRootHider module loaded");
-        
-        auto& reader = denylist_reader::DenyListReader::instance();
-        if (reader.load()) {
-            LOGI("DenyList loaded: %zu packages", reader.size());
-        }
     }
 
     void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
@@ -37,17 +29,17 @@ public:
         
         if (package_name.empty()) return;
         
-        auto& reader = denylist_reader::DenyListReader::instance();
-        if (!reader.is_loaded()) reader.load();
-        
-        if (reader.contains(package_name)) {
-            LOGI("Target app detected: %s", package_name.c_str());
+        // CARA NATIVE: Cek apakah aplikasi ada di DenyList Magisk/NeoZygisk
+        uint32_t flags = api->getFlags();
+        if (flags & zygisk::PROCESS_ON_DENYLIST) {
+            LOGI("App %s is on DenyList. Will hide root.", package_name.c_str());
             should_hide = true;
             
-            // API standar Zygisk untuk meminta unmount pada proses ini
-            api->setOption(zygisk::FORCE_DENYLIST);
+            // Minta host (Magisk/NeoZygisk) untuk melakukan unmount bawaan
+            api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
         } else {
             should_hide = false;
+            LOGD("App %s not on DenyList, skipping.", package_name.c_str());
         }
     }
 
