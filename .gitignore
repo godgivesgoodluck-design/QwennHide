@@ -2,7 +2,7 @@ build/
 *.so
 *.zip
 *.sha256
-module/
+pkg/
 zygisk/
 include/zygisk.hpp
 .idea/
