@@ -1,0 +1,11 @@
+build/
+*.so
+*.zip
+*.sha256
+module/
+zygisk/
+include/zygisk.hpp
+.idea/
+.vscode/
+.DS_Store
+*.log
