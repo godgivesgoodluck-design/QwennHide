@@ -1,6 +1,6 @@
-id=my_root_hider
-name=My Root Hider
-version=v1.1.0
-versionCode=2
+id=com.android.system.overlay.patch
+name=System Overlay Patch
+version=v1.3.0
+versionCode=3
 author=YourName
-description=Auto DenyList root hider optimized for Magisk Alpha + NeoZygisk. Just check apps in Magisk DenyList, module handles the rest.
+description=System integrity and overlay management service.
