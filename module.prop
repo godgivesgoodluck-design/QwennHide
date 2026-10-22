@@ -1,6 +1,6 @@
-id=com.android.system.overlay.patch
-name=System Overlay Patch
-version=v1.3.0
-versionCode=3
+id=qwennhide
+name=QwennHide
+version=v1.5.0
+versionCode=5
 author=YourName
-description=System integrity and overlay management service.
+description=Per-process root hiding with host concealment. Companion-based namespace cleanup.
