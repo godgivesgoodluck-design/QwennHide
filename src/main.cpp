@@ -1,137 +1,156 @@
 #include <sys/types.h>
-#include <sys/system_properties.h>
-#include <fcntl.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 #include <string.h>
+#include <errno.h>
+
 #include "zygisk.hpp"
-#include "mount_utils.h"
-#include "proc_filter.h"
+#include "props.h"
+
+#include <jni.h>
 #include <string>
+
+#ifndef QH_DEBUG
+#define QH_DEBUG 0
+#endif
+
+#if QH_DEBUG
 #include <android/log.h>
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "QH", __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "QH", __VA_ARGS__)
+#else
+#define LOGI(...) ((void)0)
+#define LOGE(...) ((void)0)
+#endif
 
-#define LOG_TAG "SysOverlayPatch"
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+namespace {
 
-// Simpan pointer ke fungsi asli
-static int (*orig_system_property_get)(const char *name, char *value) = nullptr;
-
-// Fungsi palsu untuk memalsukan properti
-static int fake_system_property_get(const char *name, char *value) {
-    int len = orig_system_property_get(name, value);
-    
-    if (len > 0 && value != nullptr) {
-        if (strcmp(name, "ro.build.tags") == 0) {
-            strcpy(value, "release-keys");
-            return strlen(value);
-        }
-        if (strcmp(name, "ro.debuggable") == 0) {
-            strcpy(value, "0");
-            return 1;
-        }
-        if (strcmp(name, "ro.secure") == 0) {
-            strcpy(value, "1");
-            return 1;
-        }
-        if (strcmp(name, "ro.build.type") == 0) {
-            strcpy(value, "user");
-            return strlen(value);
-        }
-        if (strcmp(name, "ro.kernel.android.rooted") == 0) {
-            strcpy(value, "0");
-            return 1;
-        }
-    }
-    return len;
+std::string read_jstring(JNIEnv *env, jstring s) {
+    if (env == nullptr || s == nullptr) return {};
+    const char *c = env->GetStringUTFChars(s, nullptr);
+    if (c == nullptr) return {};
+    std::string out(c);
+    env->ReleaseStringUTFChars(s, c);
+    return out;
 }
 
-class MyRootHiderModule : public zygisk::ModuleBase {
+std::string package_name(zygisk::AppSpecializeArgs *args, JNIEnv *env) {
+    std::string dir = read_jstring(env, args->app_data_dir);
+    if (!dir.empty()) {
+        auto slash = dir.find_last_of('/');
+        if (slash != std::string::npos && slash + 1 < dir.size())
+            return dir.substr(slash + 1);
+    }
+    std::string nice = read_jstring(env, args->nice_name);
+    auto colon = nice.find(':');
+    if (colon != std::string::npos) nice.resize(colon);
+    return nice;
+}
+
+// Send a command to the companion daemon via the socket it returns.
+// The companion runs as root and performs unmounts in the target namespace.
+bool request_companion_unmount(int companion_fd, pid_t target_pid) {
+    if (companion_fd < 0) return false;
+
+    int cmd = static_cast<int>(qwennhide::Cmd::UNMOUNT_TARGET);
+    if (write(companion_fd, &cmd, sizeof(cmd)) != sizeof(cmd)) return false;
+    if (write(companion_fd, &target_pid, sizeof(target_pid)) != sizeof(target_pid)) return false;
+
+    int ack = 0;
+    if (read(companion_fd, &ack, sizeof(ack)) != sizeof(ack)) return false;
+    return ack == 1;
+}
+
+class QwennHide : public zygisk::ModuleBase {
 public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
-        this->api = api;
-        this->env = env;
-        LOGI("Module loaded");
-
-        // Cari libc.so untuk melakukan PLT Hook
-        FILE *fp = fopen("/proc/self/maps", "r");
-        if (fp) {
-            char line[512];
-            dev_t libc_dev = 0;
-            ino_t libc_inode = 0;
-            
-            while (fgets(line, sizeof(line), fp)) {
-                if (strstr(line, "/system/lib") && strstr(line, "libc.so")) {
-                    char perms[5], path[256];
-                    unsigned long offset;
-                    // Parse format: address perms offset dev inode pathname
-                    if (sscanf(line, "%*x-%*x %4s %lx %x:%x %lu %255s", perms, &offset, 
-                               (unsigned int*)&libc_dev, (unsigned int*)&libc_inode, path) == 5) {
-                        break;
-                    }
-                }
-            }
-            fclose(fp);
-
-            if (libc_dev != 0 && libc_inode != 0) {
-                LOGI("Found libc.so: dev=%u, inode=%lu", libc_dev, libc_inode);
-                
-                // Register hook untuk __system_property_get
-                api->pltHookRegister(libc_dev, libc_inode, "__system_property_get", 
-                                     (void *)fake_system_property_get, 
-                                     (void **)&orig_system_property_get);
-                
-                // Commit hook agar aktif
-                if (api->pltHookCommit()) {
-                    LOGI("Property spoofing hooks committed successfully");
-                } else {
-                    LOGE("Failed to commit PLT hooks");
-                }
-            }
-        }
+        api_ = api;
+        env_ = env;
     }
 
     void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
-        std::string package_name;
-        if (args->nice_name != nullptr) {
-            const char *name = env->GetStringUTFChars(args->nice_name, nullptr);
-            if (name) {
-                package_name = name;
-                env->ReleaseStringUTFChars(args->nice_name, name);
-            }
+        target_ = false;
+        companion_fd_ = -1;
+
+        if (args == nullptr || api_ == nullptr || env_ == nullptr) return;
+
+        const std::string pkg = package_name(args, env_);
+        if (pkg.empty()) {
+            api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
+            return;
         }
-        
-        if (package_name.empty()) return;
-        
-        uint32_t flags = api->getFlags();
-        if (flags & zygisk::PROCESS_ON_DENYLIST) {
-            LOGI("App %s is on DenyList. Hiding root.", package_name.c_str());
-            should_hide = true;
-            
-            // HAPUS baris FORCE_DENYLIST_UNMOUNT di sini agar module kita yang menangani 100%
-            // api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT); 
+
+        const uint32_t flags = api_->getFlags();
+        LOGI("pkg=%s flags=0x%x", pkg.c_str(), flags);
+
+        if ((flags & zygisk::PROCESS_ON_DENYLIST) == 0) {
+            api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
+            return;
+        }
+
+        target_ = true;
+
+        // Ask host to do its own denylist unmount (works on Magisk; may be no-op on NeoZygisk).
+        api_->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
+
+        // Connect to our root companion for deeper namespace cleanup.
+        companion_fd_ = api_->connectCompanion();
+        if (companion_fd_ < 0) {
+            LOGE("companion connect failed");
+        }
+
+        // Register PLT hooks for property spoofing and path hiding.
+        // NOTE: hooks must stay resident for the lifetime of the app process.
+        //       This means the module library will remain in /proc/self/maps.
+        //       We deliberately do NOT call DLCLOSE_MODULE_LIBRARY for target apps.
+        api_->pltHookRegister(0, 0, "__system_property_get",
+                              (void *)fake_system_property_get,
+                              (void **)&qwennhide::hooks::system_property_get);
+        api_->pltHookRegister(0, 0, "stat",
+                              (void *)fake_stat,
+                              (void **)&qwennhide::hooks::stat_fn);
+        api_->pltHookRegister(0, 0, "access",
+                              (void *)fake_access,
+                              (void **)&qwennhide::hooks::access_fn);
+        api_->pltHookRegister(0, 0, "fopen",
+                              (void *)fake_fopen,
+                              (void **)&qwennhide::hooks::fopen_fn);
+
+        if (!api_->pltHookCommit()) {
+            LOGE("pltHookCommit failed");
         } else {
-            should_hide = false;
+            LOGI("hooks committed");
         }
     }
 
     void postAppSpecialize(const zygisk::AppSpecializeArgs *args) override {
-        if (!should_hide) return;
-        
-        LOGI("Performing root hide in app namespace...");
-        
-        mount_utils::setup_proc_filter();
-        mount_utils::unmount_root_mounts();
-        mount_utils::hide_files();
-        
-        LOGI("Root hiding completed. Unloading module...");
-        api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
+        if (!target_) return;
+
+        // Ask companion (running as root) to enter our namespace and unmount.
+        if (companion_fd_ >= 0) {
+            pid_t self = getpid();
+            if (request_companion_unmount(companion_fd_, self)) {
+                LOGI("companion unmount OK for pid %d", self);
+            } else {
+                LOGE("companion unmount FAILED for pid %d", self);
+            }
+            close(companion_fd_);
+            companion_fd_ = -1;
+        }
+
+        // DO NOT call DLCLOSE_MODULE_LIBRARY here: PLT hooks must remain resident.
+        // The library will be unloaded automatically when the app process exits.
     }
 
 private:
-    zygisk::Api *api;
-    JNIEnv *env;
-    bool should_hide = false;
+    zygisk::Api *api_ = nullptr;
+    JNIEnv *env_ = nullptr;
+    bool target_ = false;
+    int companion_fd_ = -1;
 };
 
-REGISTER_ZYGISK_MODULE(MyRootHiderModule)
+} // namespace
+
+REGISTER_ZYGISK_MODULE(QwennHide)
+REGISTER_ZYGISK_COMPANION(qwennhide_companion_entry)
