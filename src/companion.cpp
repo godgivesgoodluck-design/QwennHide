@@ -28,8 +28,6 @@
 
 namespace {
 
-// Paths to unmount inside the target's mount namespace.
-// These are the mount points Magisk/NeoZygisk create.
 static const char *UNMOUNT_TARGETS[] = {
     "/system/bin/su",
     "/system/xbin/su",
@@ -50,8 +48,6 @@ static const char *UNMOUNT_TARGETS[] = {
     nullptr,
 };
 
-// Enter the mount namespace of the given PID.
-// Returns 0 on success.
 int enter_namespace(pid_t pid) {
     char path[64];
     snprintf(path, sizeof(path), "/proc/%d/ns/mnt", pid);
@@ -73,36 +69,26 @@ int enter_namespace(pid_t pid) {
     return 0;
 }
 
-// Unmount all tracked paths in the current (target's) namespace.
 void do_unmounts() {
     for (int i = 0; UNMOUNT_TARGETS[i] != nullptr; i++) {
         const char *p = UNMOUNT_TARGETS[i];
         struct stat st;
         if (lstat(p, &st) != 0) continue;
 
-        // Try lazy unmount first (MNT_DETACH).
         if (umount2(p, MNT_DETACH) == 0) {
             LOGI("unmounted %s", p);
             continue;
         }
-        // Fallback: bind-mount /dev/null over it so any read returns empty.
         if (S_ISREG(st.st_mode)) {
             if (mount("/dev/null", p, nullptr, MS_BIND | MS_REC, nullptr) == 0) {
                 LOGI("bind-mounted /dev/null over %s", p);
             }
         }
     }
-
-    // Also hide /proc/self/mountinfo from revealing leftover mounts.
-    // We do this by bind-mounting a filtered copy.
-    // (Implemented as a simple approach: leave mountinfo alone for now;
-    //  the companion already removed the sensitive mounts above.)
 }
 
 } // namespace
 
-// Companion entry point. Called by the host when the module calls connectCompanion().
-// Runs as root. Receives commands over the socket.
 extern "C" void qwennhide_companion_entry(int client) {
     while (true) {
         int cmd = 0;
