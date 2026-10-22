@@ -8,7 +8,6 @@ set(SOURCES
     src/main.cpp
     src/mount_utils.cpp
     src/proc_filter.cpp
-    src/denylist_reader.cpp
 )
 
 add_library(my_root_hider SHARED ${SOURCES})
