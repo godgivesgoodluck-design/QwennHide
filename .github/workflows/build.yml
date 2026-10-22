@@ -18,22 +18,22 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install NDK & Ninja
+      - name: Install NDK
         run: |
           export ANDROID_HOME=/usr/local/lib/android/sdk
           export SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           
           echo "Menerima semua lisensi Android SDK..."
+          # Menggunakan || true untuk mengabaikan warning "Broken pipe" dari yes
           yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
           
-          echo "Menginstal NDK r27 dan Ninja..."
-          "$SDKMANAGER" "ndk;27.0.12077973" "ninja"
+          echo "Menginstal NDK r27..."
+          "$SDKMANAGER" "ndk;27.0.12077973"
           
           NDK_PATH="$ANDROID_HOME/ndk/27.0.12077973"
           echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
           echo "NDK=$NDK_PATH" >> $GITHUB_ENV
           
-          # Verifikasi bahwa file toolchain benar-benar ada
           echo "Memverifikasi toolchain file..."
           ls -l "$NDK_PATH/build/cmake/android.toolchain.cmake"
 
@@ -42,6 +42,7 @@ jobs:
           mkdir -p include
           curl -sSL -o include/zygisk.hpp \
             https://raw.githubusercontent.com/topjohnwu/zygisk-module-sample/master/module/jni/zygisk.hpp
+          echo "zygisk.hpp berhasil didownload"
 
       - name: Build for arm64-v8a
         run: |
@@ -62,7 +63,6 @@ jobs:
         run: |
           mkdir -p build/armeabi-v7a
           cd build/armeabi-v7a
-          # PERHATIAN: Pastikan baris CMAKE_TOOLCHAIN_FILE di bawah ini TIDAK terpotong
           cmake ../.. \
             -GNinja \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
