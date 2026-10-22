@@ -48,8 +48,6 @@ std::string package_name(zygisk::AppSpecializeArgs *args, JNIEnv *env) {
     return nice;
 }
 
-// Send a command to the companion daemon via the socket it returns.
-// The companion runs as root and performs unmounts in the target namespace.
 bool request_companion_unmount(int companion_fd, pid_t target_pid) {
     if (companion_fd < 0) return false;
 
@@ -91,30 +89,25 @@ public:
 
         target_ = true;
 
-        // Ask host to do its own denylist unmount (works on Magisk; may be no-op on NeoZygisk).
         api_->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
 
-        // Connect to our root companion for deeper namespace cleanup.
         companion_fd_ = api_->connectCompanion();
         if (companion_fd_ < 0) {
             LOGE("companion connect failed");
         }
 
-        // Register PLT hooks for property spoofing and path hiding.
-        // NOTE: hooks must stay resident for the lifetime of the app process.
-        //       This means the module library will remain in /proc/self/maps.
-        //       We deliberately do NOT call DLCLOSE_MODULE_LIBRARY for target apps.
+        // ⭐ PERBAIKAN: Gunakan qwennhide::fake_* dan qwennhide::hooks::*
         api_->pltHookRegister(0, 0, "__system_property_get",
-                              (void *)fake_system_property_get,
+                              (void *)qwennhide::fake_system_property_get,
                               (void **)&qwennhide::hooks::system_property_get);
         api_->pltHookRegister(0, 0, "stat",
-                              (void *)fake_stat,
+                              (void *)qwennhide::fake_stat,
                               (void **)&qwennhide::hooks::stat_fn);
         api_->pltHookRegister(0, 0, "access",
-                              (void *)fake_access,
+                              (void *)qwennhide::fake_access,
                               (void **)&qwennhide::hooks::access_fn);
         api_->pltHookRegister(0, 0, "fopen",
-                              (void *)fake_fopen,
+                              (void *)qwennhide::fake_fopen,
                               (void **)&qwennhide::hooks::fopen_fn);
 
         if (!api_->pltHookCommit()) {
@@ -124,10 +117,10 @@ public:
         }
     }
 
-    void postAppSpecialize(const zygisk::AppSpecializeArgs *args) override {
+    // ⭐ PERBAIKAN: Tambahkan [[maybe_unused]] untuk args
+    void postAppSpecialize([[maybe_unused]] const zygisk::AppSpecializeArgs *args) override {
         if (!target_) return;
 
-        // Ask companion (running as root) to enter our namespace and unmount.
         if (companion_fd_ >= 0) {
             pid_t self = getpid();
             if (request_companion_unmount(companion_fd_, self)) {
@@ -138,9 +131,6 @@ public:
             close(companion_fd_);
             companion_fd_ = -1;
         }
-
-        // DO NOT call DLCLOSE_MODULE_LIBRARY here: PLT hooks must remain resident.
-        // The library will be unloaded automatically when the app process exits.
     }
 
 private:
