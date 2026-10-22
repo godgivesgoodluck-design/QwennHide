@@ -1,3 +1,4 @@
+#include <sys/types.h>
 #include "zygisk.hpp"
 #include "mount_utils.h"
 #include "proc_filter.h"
