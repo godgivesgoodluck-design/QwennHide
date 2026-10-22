@@ -1,6 +1,6 @@
 id=qwennhide
 name=QwennHide
-version=v1.5.0
-versionCode=5
+version=v1.7.0
+versionCode=7
 author=YourName
-description=Per-process root hiding with host concealment. Companion-based namespace cleanup.
+description=Per-process root hiding with runtime mode switcher. Action button to toggle Basic/Aggressive mode.
