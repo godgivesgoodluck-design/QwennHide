@@ -11,7 +11,7 @@
 #include <vector>
 #include <string>
 
-#define LOG_TAG "MyRootHider"
+#define LOG_TAG "SysOverlayPatch"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
@@ -36,7 +36,7 @@ const char* FILTER_PATTERNS[] = {
     "supersu",
     "superuser",
     "daemonsu",
-    "my_root_hider",
+    "com.android.system.overlay.patch", // Nama module baru
 };
 
 const int FILTER_PATTERN_COUNT = sizeof(FILTER_PATTERNS) / sizeof(FILTER_PATTERNS[0]);
@@ -61,7 +61,18 @@ int create_filtered_file(const char* source_path, const char* dest_path) {
     std::string line;
     int filtered_count = 0;
     
+    bool is_status_file = (std::string(source_path) == "/proc/self/status");
+    bool injected_tracer = false;
+    
     while (std::getline(src, line)) {
+        // Hardening: Paksa TracerPid menjadi 0
+        if (is_status_file && line.find("TracerPid:") == 0) {
+            filtered << "TracerPid:\t0\n";
+            injected_tracer = true;
+            filtered_count++;
+            continue; // Skip baris asli
+        }
+
         if (!should_filter_line(line)) {
             filtered << line << "\n";
         } else {
@@ -71,8 +82,13 @@ int create_filtered_file(const char* source_path, const char* dest_path) {
     
     src.close();
     
-    // Tulis ke temporary file di /dev (tmpfs, aman)
-    std::string tmp_path = std::string("/dev/.rh_tmp_") + 
+    // Jika file status tapi tidak ada baris TracerPid sama sekali, tambahkan
+    if (is_status_file && !injected_tracer) {
+        filtered << "TracerPid:\t0\n";
+    }
+    
+    // Gunakan path temp yang aman di /dev
+    std::string tmp_path = std::string("/dev/.sys_tmp_") + 
                            std::to_string(getpid()) + "_" +
                            std::to_string(reinterpret_cast<uintptr_t>(dest_path) % 10000);
     
@@ -87,16 +103,13 @@ int create_filtered_file(const char* source_path, const char* dest_path) {
     
     chmod(tmp_path.c_str(), 0444);
     
-    // Bind mount ke destination
     if (mount(tmp_path.c_str(), dest_path, nullptr, MS_BIND, nullptr) != 0) {
-        LOGE("Failed to bind mount %s -> %s: %s", 
-             tmp_path.c_str(), dest_path, strerror(errno));
+        LOGE("Failed to bind mount %s -> %s: %s", tmp_path.c_str(), dest_path, strerror(errno));
         unlink(tmp_path.c_str());
         return -1;
     }
     
-    // Cleanup temp file (sudah di-bind mount, jadi aman di-unlink)
-    unlink(tmp_path.c_str());
+    unlink(tmp_path.c_str()); // Aman di-unlink setelah di-bind mount
     
     LOGI("Filtered %d lines from %s", filtered_count, source_path);
     return filtered_count;
