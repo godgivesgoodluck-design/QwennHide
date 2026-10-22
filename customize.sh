@@ -1,29 +1,33 @@
 #!/system/bin/sh
+SKIPUNZIP=1
 
-# Set permissions untuk script
-chmod 755 "$MODPATH/uninstall.sh" 2>/dev/null
-chmod 755 "$MODPATH/action.sh" 2>/dev/null
+ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+ui_print "     QwennHide v2.0 (Proven Architecture)"
+ui_print "     Compatible: Magisk Alpha + NeoZygisk"
+ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# Set permissions untuk zygisk libraries
-if [ -d "$MODPATH/zygisk" ]; then
-    chmod 755 "$MODPATH/zygisk"
-    for lib in "$MODPATH/zygisk"/*.so; do
-        [ -f "$lib" ] && chmod 755 "$lib"
-    done
+if [ "$ZYGISK_ENABLED" != "1" ]; then
+    ui_print "! Zygisk is NOT enabled. Aborting."
+    abort
 fi
 
-# Create mode flag file dengan default "basic"
-# File ini dibaca oleh module C++ untuk menentukan mode
-MODE_FILE="$MODPATH/mode"
-if [ ! -f "$MODE_FILE" ]; then
-    echo "basic" > "$MODE_FILE"
-fi
-chmod 644 "$MODE_FILE"
+ui_print "- Extracting module files..."
+unzip -o "$ZIPFILE" 'module.prop' 'zygisk/*' 'service.sh' 'action.sh' 'customize.sh' -d "$MODPATH" >/dev/null 2>&1
 
-# Verifikasi file penting
-if [ ! -f "$MODPATH/action.sh" ]; then
-    ui_print "WARNING: action.sh missing!"
+DATADIR="/data/adb/qwennhide"
+mkdir -p "$DATADIR"
+chmod 700 "$DATADIR"
+
+# Default to basic mode
+if [ ! -f "$DATADIR/mode" ]; then
+    echo "basic" > "$DATADIR/mode"
 fi
-if [ ! -f "$MODE_FILE" ]; then
-    ui_print "WARNING: mode file missing!"
-fi
+
+set_perm_recursive "$MODPATH" root root 0755 0644
+set_perm "$MODPATH/service.sh" root root 0755
+set_perm "$MODPATH/action.sh" root root 0755
+
+ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+ui_print "  Installation complete! Reboot to apply."
+ui_print "  Use Magisk Action button to switch modes."
+ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
