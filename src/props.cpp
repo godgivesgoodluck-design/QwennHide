@@ -26,7 +26,6 @@
 
 namespace qwennhide {
 
-// ---- Original function pointers ----
 static int  (*orig_system_property_get)(const char *, char *) = nullptr;
 static int  (*orig_stat)(const char *, struct stat *) = nullptr;
 static int  (*orig_lstat)(const char *, struct stat *) = nullptr;
@@ -37,7 +36,6 @@ static int  (*orig_openat)(int, const char *, int, ...) = nullptr;
 static ssize_t (*orig_readlink)(const char *, char *, size_t) = nullptr;
 static FILE *(*orig_fopen)(const char *, const char *) = nullptr;
 
-// ---- Paths that must be invisible ----
 static const char *HIDDEN_PATHS[] = {
     "/system/bin/su",
     "/system/xbin/su",
@@ -59,26 +57,11 @@ static const char *HIDDEN_PATHS[] = {
     nullptr,
 };
 
-// Strings yang harus disembunyikan dari /proc/self/maps
-static const char *HIDDEN_MAP_STRINGS[] = {
-    "qwennhide",
-    "libqwennhide.so",
-    "adb/modules",
-    "magisk",
-    "zygisk",
-    nullptr,
-};
-
 bool is_hidden_path(const char *path) {
     if (path == nullptr) return false;
-    
-    // Resolve relative path yang mencurigakan
-    // (app kadang pakai "../" untuk bypass)
-    
     for (int i = 0; HIDDEN_PATHS[i] != nullptr; i++) {
         const char *hp = HIDDEN_PATHS[i];
         size_t len = strlen(hp);
-        
         if (strcmp(path, hp) == 0) return true;
         if (strncmp(path, hp, len) == 0 &&
             (path[len] == '/' || path[len] == '\0')) {
@@ -87,25 +70,6 @@ bool is_hidden_path(const char *path) {
     }
     return false;
 }
-
-static bool is_maps_file(const char *path) {
-    if (path == nullptr) return false;
-    return strstr(path, "/proc/self/maps") != nullptr ||
-           strstr(path, "/proc/self/smaps") != nullptr ||
-           strstr(path, "/proc/self/maps") != nullptr;
-}
-
-static bool should_hide_maps_line(const char *line) {
-    if (line == nullptr) return false;
-    for (int i = 0; HIDDEN_MAP_STRINGS[i] != nullptr; i++) {
-        if (strstr(line, HIDDEN_MAP_STRINGS[i]) != nullptr) {
-            return true;
-        }
-    }
-    return false;
-}
-
-// ---- Hooked functions ----
 
 int fake_system_property_get(const char *name, char *value) {
     int len = orig_system_property_get(name, value);
@@ -157,10 +121,6 @@ int fake_faccessat(int dirfd, const char *path, int mode, int flags) {
 
 int fake_open(const char *path, int flags, ...) {
     if (is_hidden_path(path)) { errno = ENOENT; return -1; }
-    
-    // Untuk /proc/self/maps, kita handle khusus di read() hook
-    // Tapi untuk sekarang, biarkan dulu
-    
     mode_t mode = 0;
     if (flags & O_CREAT) {
         va_list args;
@@ -173,7 +133,6 @@ int fake_open(const char *path, int flags, ...) {
 
 int fake_openat(int dirfd, const char *path, int flags, ...) {
     if (is_hidden_path(path)) { errno = ENOENT; return -1; }
-    
     mode_t mode = 0;
     if (flags & O_CREAT) {
         va_list args;
@@ -185,9 +144,7 @@ int fake_openat(int dirfd, const char *path, int flags, ...) {
 }
 
 ssize_t fake_readlink(const char *path, char *buf, size_t bufsiz) {
-    // Sembunyikan /proc/self/exe jika mengarah ke path yang mencurigakan
     if (path != nullptr && strcmp(path, "/proc/self/exe") == 0) {
-        // Kembalikan path yang "normal"
         const char *fake = "/system/bin/app_process64";
         size_t len = strlen(fake);
         if (len >= bufsiz) len = bufsiz - 1;
