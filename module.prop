@@ -1,6 +1,6 @@
-id=QwennHide
-name=QwennHide
+id=my_root_hider
+name=My Root Hider
 version=v1.1.0
 versionCode=2
-author=Qwenn
+author=YourName
 description=Auto DenyList root hider optimized for Magisk Alpha + NeoZygisk. Just check apps in Magisk DenyList, module handles the rest.
