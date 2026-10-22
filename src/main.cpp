@@ -17,14 +17,11 @@ public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
         this->api = api;
         this->env = env;
-        
-        LOGI("MyRootHider module loaded (Magisk Alpha + NeoZygisk optimized)");
+        LOGI("MyRootHider module loaded");
         
         auto& reader = denylist_reader::DenyListReader::instance();
         if (reader.load()) {
-            LOGI("DenyList loaded successfully: %zu packages", reader.size());
-        } else {
-            LOGE("Failed to load DenyList from Magisk");
+            LOGI("DenyList loaded: %zu packages", reader.size());
         }
     }
 
@@ -38,48 +35,32 @@ public:
             }
         }
         
-        if (package_name.empty()) {
-            return;
-        }
+        if (package_name.empty()) return;
         
         auto& reader = denylist_reader::DenyListReader::instance();
-        
-        if (!reader.is_loaded()) {
-            reader.load();
-        }
+        if (!reader.is_loaded()) reader.load();
         
         if (reader.contains(package_name)) {
-            LOGI("App %s is in Magisk DenyList - will hide root", 
-                 package_name.c_str());
+            LOGI("Target app detected: %s", package_name.c_str());
             should_hide = true;
             
-            // Request built-in denylist unmount (optional, untuk kompatibilitas)
-            api->setOption(zygisk::OPTION_DENYLIST);
+            // API standar Zygisk untuk meminta unmount pada proses ini
+            api->setOption(zygisk::FORCE_DENYLIST);
         } else {
             should_hide = false;
-            LOGD("App %s not in DenyList, skipping", package_name.c_str());
         }
     }
 
     void postAppSpecialize(const zygisk::AppSpecializeArgs *args) override {
-        if (!should_hide) {
-            return;
-        }
+        if (!should_hide) return;
         
-        LOGI("=== Performing root hide in app namespace ===");
+        LOGI("Performing root hide in app namespace...");
         
-        LOGI("[1/4] Filtering procfs...");
         mount_utils::setup_proc_filter();
-        
-        LOGI("[2/4] Unmounting root mounts...");
         mount_utils::unmount_root_mounts();
-        
-        LOGI("[3/4] Hiding sensitive files...");
         mount_utils::hide_files();
         
-        LOGI("[4/4] Root hiding completed!");
-        
-        LOGI("Unloading module from memory...");
+        LOGI("Root hiding completed. Unloading module...");
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
