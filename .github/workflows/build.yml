@@ -1,4 +1,4 @@
-name: Build MyRootHider Module
+name: Build QwennHide
 
 on:
   push:
@@ -7,90 +7,79 @@ on:
   workflow_dispatch:
 
 env:
-  MODULE_ID: my_root_hider
-  MODULE_VERSION: v1.2.0
+  MODULE_ID: qwennhide
+  MODULE_VERSION: v1.5.0
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    
+
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install NDK
         run: |
           export ANDROID_HOME=/usr/local/lib/android/sdk
-          export SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          
-          echo "Menerima semua lisensi Android SDK..."
-          # Menggunakan || true untuk mengabaikan warning "Broken pipe" dari yes
-          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-          
-          echo "Menginstal NDK r27..."
-          "$SDKMANAGER" "ndk;27.0.12077973"
-          
-          NDK_PATH="$ANDROID_HOME/ndk/27.0.12077973"
-          echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
-          echo "NDK=$NDK_PATH" >> $GITHUB_ENV
-          
-          echo "Memverifikasi toolchain file..."
-          ls -l "$NDK_PATH/build/cmake/android.toolchain.cmake"
+          SDK="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDK" --licenses > /dev/null 2>&1 || true
+          "$SDK" "ndk;27.0.12077973"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
 
-      - name: Download zygisk.hpp
+      - name: Fetch Zygisk API header
         run: |
           mkdir -p include
-          curl -sSL -o include/zygisk.hpp \
+          curl --fail --silent --show-error -L -o include/zygisk.hpp \
             https://raw.githubusercontent.com/topjohnwu/zygisk-module-sample/master/module/jni/zygisk.hpp
-          echo "zygisk.hpp berhasil didownload"
+          grep -q "REGISTER_ZYGISK_MODULE" include/zygisk.hpp
 
-      - name: Build for arm64-v8a
+      - name: Clean previous artifacts
+        run: rm -rf zygisk pkg build
+
+      - name: Build arm64-v8a
         run: |
-          mkdir -p build/arm64-v8a
+          mkdir -p build/arm64-v8a zygisk
           cd build/arm64-v8a
-          cmake ../.. \
-            -GNinja \
+          cmake ../.. -GNinja \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-26 \
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build . --config Release
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release -DQH_DEBUG=OFF
+          cmake --build .
           cd ../..
-          mkdir -p zygisk
-          cp build/arm64-v8a/libmy_root_hider.so zygisk/arm64-v8a.so
+          cp build/arm64-v8a/libqwennhide.so zygisk/arm64-v8a.so
 
-      - name: Build for armeabi-v7a
+      - name: Build armeabi-v7a
         run: |
           mkdir -p build/armeabi-v7a
           cd build/armeabi-v7a
-          cmake ../.. \
-            -GNinja \
+          cmake ../.. -GNinja \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=armeabi-v7a \
-            -DANDROID_PLATFORM=android-26 \
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build . --config Release
+            -DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release -DQH_DEBUG=OFF
+          cmake --build .
           cd ../..
-          cp build/armeabi-v7a/libmy_root_hider.so zygisk/armeabi-v7a.so
+          cp build/armeabi-v7a/libqwennhide.so zygisk/armeabi-v7a.so
 
-      - name: Prepare Module
+      - name: Package module
         run: |
-          mkdir -p module
-          cp module.prop module/
-          cp -r zygisk module/
-          cp -r scripts/* module/
-          cp -r META-INF module/
-          chmod 755 module/*.sh
-
-      - name: Create ZIP
-        run: |
-          cd module
+          mkdir -p pkg/META-INF/com/google/android
+          cp module.prop customize.sh uninstall.sh pkg/
+          cp -r zygisk pkg/
+          cp META-INF/com/google/android/update-binary pkg/META-INF/com/google/android/
+          cp META-INF/com/google/android/updater-script pkg/META-INF/com/google/android/
+          chmod 755 pkg/customize.sh pkg/uninstall.sh
+          cd pkg
           zip -r9 ../${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip .
-          cd ..
+
+      - name: Verify package contents
+        run: |
+          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip
+          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q uninstall.sh
+          if unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -E 'post-fs-data.sh|service.sh|system/|sepolicy.rule'; then
+            echo "Unexpected residue-producing file in package"; exit 1
+          fi
           sha256sum ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip > checksum.txt
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}
           path: |
