@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
+#include <cerrno>       // ⭐ TAMBAHKAN INI untuk errno dan ENOENT
 #include <jni.h>
 
 #ifndef QH_DEBUG
@@ -67,7 +68,7 @@ static bool is_hidden_path(const char *path) {
 }
 
 // ---- Hooked functions ----
-static int fake_system_property_get(const char *name, char *value) {
+int fake_system_property_get(const char *name, char *value) {
     int len = orig_system_property_get(name, value);
     if (len <= 0 || value == nullptr) return len;
 
@@ -95,7 +96,7 @@ static int fake_system_property_get(const char *name, char *value) {
     return len;
 }
 
-static int fake_stat(const char *path, struct stat *sb) {
+int fake_stat(const char *path, struct stat *sb) {
     if (is_hidden_path(path)) {
         errno = ENOENT;
         return -1;
@@ -103,7 +104,7 @@ static int fake_stat(const char *path, struct stat *sb) {
     return orig_stat(path, sb);
 }
 
-static int fake_access(const char *path, int mode) {
+int fake_access(const char *path, int mode) {
     if (is_hidden_path(path)) {
         errno = ENOENT;
         return -1;
@@ -111,7 +112,7 @@ static int fake_access(const char *path, int mode) {
     return orig_access(path, mode);
 }
 
-static FILE *fake_fopen(const char *path, const char *mode) {
+FILE *fake_fopen(const char *path, const char *mode) {
     if (is_hidden_path(path)) {
         errno = ENOENT;
         return nullptr;
@@ -121,13 +122,10 @@ static FILE *fake_fopen(const char *path, const char *mode) {
 
 // ---- Public API ----
 bool install_hooks() {
-    // Hooks are installed by the module via Zygisk PLT API.
-    // This function is a placeholder; actual registration is in main.cpp
-    // because we need the Api* pointer.
     return true;
 }
 
-// ---- Accessors used by main.cpp ----
+// ---- Hook pointers (exposed via header) ----
 namespace hooks {
     int  (*system_property_get)(const char *, char *) = nullptr;
     int  (*stat_fn)(const char *, struct stat *) = nullptr;
