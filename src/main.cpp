@@ -1,18 +1,18 @@
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <time.h>
 
 #include "zygisk.hpp"
 #include "props.h"
 
 #include <jni.h>
 #include <string>
-#include <vector>
-#include <unordered_set>
 
 #ifndef QH_DEBUG
 #define QH_DEBUG 0
@@ -29,6 +29,58 @@
 
 namespace {
 
+// ---- Mode flag file ----
+// Path ini ada di dalam folder module, bisa dibaca zygote
+constexpr const char *MODE_FILE = "/data/adb/modules/qwennhide/mode";
+
+enum class Mode { BASIC, AGGRESSIVE };
+
+// Cache untuk menghindari baca file setiap kali
+static Mode g_cached_mode = Mode::BASIC;
+static time_t g_last_check = 0;
+constexpr time_t CHECK_INTERVAL_SEC = 5;
+
+Mode read_current_mode() {
+    time_t now = time(nullptr);
+    if ((now - g_last_check) < CHECK_INTERVAL_SEC) {
+        return g_cached_mode;
+    }
+    
+    int fd = open(MODE_FILE, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        // File belum ada (module baru diinstall, customize.sh belum jalan?)
+        // Default ke basic
+        g_cached_mode = Mode::BASIC;
+        g_last_check = now;
+        return g_cached_mode;
+    }
+    
+    char buf[32] = {0};
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    
+    if (n <= 0) {
+        g_cached_mode = Mode::BASIC;
+    } else {
+        // Trim whitespace/newline
+        for (ssize_t i = 0; i < n; i++) {
+            if (buf[i] == '\n' || buf[i] == '\r' || buf[i] == ' ' || buf[i] == '\t') {
+                buf[i] = '\0';
+                break;
+            }
+        }
+        if (strcmp(buf, "aggressive") == 0) {
+            g_cached_mode = Mode::AGGRESSIVE;
+        } else {
+            g_cached_mode = Mode::BASIC;
+        }
+    }
+    
+    g_last_check = now;
+    return g_cached_mode;
+}
+
+// ---- JNI helpers ----
 std::string read_jstring(JNIEnv *env, jstring s) {
     if (env == nullptr || s == nullptr) return {};
     const char *c = env->GetStringUTFChars(s, nullptr);
@@ -51,19 +103,6 @@ std::string package_name(zygisk::AppSpecializeArgs *args, JNIEnv *env) {
     return nice;
 }
 
-// Daftar aplikasi yang butuh "mode penuh" (hook + filter maps)
-// Aplikasi di luar list ini akan pakai mode ringan (unload module)
-const std::unordered_set<std::string> AGGRESSIVE_APPS = {
-    "com.google.android.apps.nbu.paisa.user",   // Google Pay
-    "com.android.vending",                      // Play Store
-    "com.google.android.gms",                   // GMS
-    // Tambahkan app bank/e-wallet yang agresif di sini
-};
-
-bool is_aggressive_app(const std::string &pkg) {
-    return AGGRESSIVE_APPS.count(pkg) > 0;
-}
-
 bool request_companion_unmount(int companion_fd, pid_t target_pid) {
     if (companion_fd < 0) return false;
     int cmd = static_cast<int>(qwennhide::Cmd::UNMOUNT_TARGET);
@@ -74,11 +113,13 @@ bool request_companion_unmount(int companion_fd, pid_t target_pid) {
     return ack == 1;
 }
 
+// ---- Module class ----
 class QwennHide : public zygisk::ModuleBase {
 public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
         api_ = api;
         env_ = env;
+        LOGI("QwennHide loaded. Mode file: %s", MODE_FILE);
     }
 
     void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
@@ -95,26 +136,32 @@ public:
         }
 
         const uint32_t flags = api_->getFlags();
-        LOGI("pkg=%s flags=0x%x", pkg.c_str(), flags);
-
+        
         if ((flags & zygisk::PROCESS_ON_DENYLIST) == 0) {
+            // Bukan target denylist -> unload module
             api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
             return;
         }
 
         target_ = true;
-        aggressive_ = is_aggressive_app(pkg);
-
-        LOGI("app %s -> %s mode", pkg.c_str(), 
-             aggressive_ ? "AGGRESSIVE" : "LIGHT");
+        
+        // Baca mode dari file flag (dengan cache)
+        Mode mode = read_current_mode();
+        aggressive_ = (mode == Mode::AGGRESSIVE);
+        
+        LOGI("pkg=%s mode=%s", pkg.c_str(), 
+             aggressive_ ? "AGGRESSIVE" : "BASIC");
 
         // Minta host unmount (bekerja di Magisk, mungkin no-op di NeoZygisk)
         api_->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
 
         if (aggressive_) {
-            // MODE PENUH: hook + companion + module tetap di memory
+            // ===== MODE AGGRESSIVE =====
+            // Hook aktif, companion aktif, module tetap di memory
             companion_fd_ = api_->connectCompanion();
-            if (companion_fd_ < 0) LOGE("companion connect failed");
+            if (companion_fd_ < 0) {
+                LOGE("companion connect failed");
+            }
 
             // Register semua hook
             api_->pltHookRegister(0, 0, "__system_property_get",
@@ -148,11 +195,12 @@ public:
             if (!api_->pltHookCommit()) {
                 LOGE("pltHookCommit failed");
             } else {
-                LOGI("all hooks committed");
+                LOGI("aggressive hooks committed");
             }
-            // JANGAN unload module di mode agresif (hook harus resident)
+            // JANGAN unload module (hook harus resident)
         } else {
-            // MODE RINGAN: unload module agar tidak terdeteksi di /proc/self/maps
+            // ===== MODE BASIC =====
+            // Unload module agar tidak terdeteksi di /proc/self/maps
             // Hanya mengandalkan FORCE_DENYLIST_UNMOUNT dari host
             api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
         }
@@ -160,14 +208,14 @@ public:
 
     void postAppSpecialize([[maybe_unused]] const zygisk::AppSpecializeArgs *args) override {
         if (!target_) return;
-        if (!aggressive_) return;  // Mode ringan sudah unload di pre
+        if (!aggressive_) return; // Mode basic sudah unload di pre
 
         if (companion_fd_ >= 0) {
             pid_t self = getpid();
             if (request_companion_unmount(companion_fd_, self)) {
-                LOGI("companion unmount OK for pid %d", self);
+                LOGI("companion unmount OK pid=%d", self);
             } else {
-                LOGE("companion unmount FAILED for pid %d", self);
+                LOGE("companion unmount FAILED pid=%d", self);
             }
             close(companion_fd_);
             companion_fd_ = -1;
