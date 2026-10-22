@@ -4,12 +4,15 @@
 #include <unistd.h>
 #include <string.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #include "zygisk.hpp"
 #include "props.h"
 
 #include <jni.h>
 #include <string>
+#include <vector>
+#include <unordered_set>
 
 #ifndef QH_DEBUG
 #define QH_DEBUG 0
@@ -48,13 +51,24 @@ std::string package_name(zygisk::AppSpecializeArgs *args, JNIEnv *env) {
     return nice;
 }
 
+// Daftar aplikasi yang butuh "mode penuh" (hook + filter maps)
+// Aplikasi di luar list ini akan pakai mode ringan (unload module)
+const std::unordered_set<std::string> AGGRESSIVE_APPS = {
+    "com.google.android.apps.nbu.paisa.user",   // Google Pay
+    "com.android.vending",                      // Play Store
+    "com.google.android.gms",                   // GMS
+    // Tambahkan app bank/e-wallet yang agresif di sini
+};
+
+bool is_aggressive_app(const std::string &pkg) {
+    return AGGRESSIVE_APPS.count(pkg) > 0;
+}
+
 bool request_companion_unmount(int companion_fd, pid_t target_pid) {
     if (companion_fd < 0) return false;
-
     int cmd = static_cast<int>(qwennhide::Cmd::UNMOUNT_TARGET);
     if (write(companion_fd, &cmd, sizeof(cmd)) != sizeof(cmd)) return false;
     if (write(companion_fd, &target_pid, sizeof(target_pid)) != sizeof(target_pid)) return false;
-
     int ack = 0;
     if (read(companion_fd, &ack, sizeof(ack)) != sizeof(ack)) return false;
     return ack == 1;
@@ -69,6 +83,7 @@ public:
 
     void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
         target_ = false;
+        aggressive_ = false;
         companion_fd_ = -1;
 
         if (args == nullptr || api_ == nullptr || env_ == nullptr) return;
@@ -88,38 +103,64 @@ public:
         }
 
         target_ = true;
+        aggressive_ = is_aggressive_app(pkg);
 
+        LOGI("app %s -> %s mode", pkg.c_str(), 
+             aggressive_ ? "AGGRESSIVE" : "LIGHT");
+
+        // Minta host unmount (bekerja di Magisk, mungkin no-op di NeoZygisk)
         api_->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
 
-        companion_fd_ = api_->connectCompanion();
-        if (companion_fd_ < 0) {
-            LOGE("companion connect failed");
-        }
+        if (aggressive_) {
+            // MODE PENUH: hook + companion + module tetap di memory
+            companion_fd_ = api_->connectCompanion();
+            if (companion_fd_ < 0) LOGE("companion connect failed");
 
-        // ⭐ PERBAIKAN: Gunakan qwennhide::fake_* dan qwennhide::hooks::*
-        api_->pltHookRegister(0, 0, "__system_property_get",
-                              (void *)qwennhide::fake_system_property_get,
-                              (void **)&qwennhide::hooks::system_property_get);
-        api_->pltHookRegister(0, 0, "stat",
-                              (void *)qwennhide::fake_stat,
-                              (void **)&qwennhide::hooks::stat_fn);
-        api_->pltHookRegister(0, 0, "access",
-                              (void *)qwennhide::fake_access,
-                              (void **)&qwennhide::hooks::access_fn);
-        api_->pltHookRegister(0, 0, "fopen",
-                              (void *)qwennhide::fake_fopen,
-                              (void **)&qwennhide::hooks::fopen_fn);
+            // Register semua hook
+            api_->pltHookRegister(0, 0, "__system_property_get",
+                (void *)qwennhide::fake_system_property_get,
+                (void **)&qwennhide::hooks::system_property_get);
+            api_->pltHookRegister(0, 0, "stat",
+                (void *)qwennhide::fake_stat,
+                (void **)&qwennhide::hooks::stat_fn);
+            api_->pltHookRegister(0, 0, "lstat",
+                (void *)qwennhide::fake_lstat,
+                (void **)&qwennhide::hooks::lstat_fn);
+            api_->pltHookRegister(0, 0, "access",
+                (void *)qwennhide::fake_access,
+                (void **)&qwennhide::hooks::access_fn);
+            api_->pltHookRegister(0, 0, "faccessat",
+                (void *)qwennhide::fake_faccessat,
+                (void **)&qwennhide::hooks::faccessat_fn);
+            api_->pltHookRegister(0, 0, "open",
+                (void *)qwennhide::fake_open,
+                (void **)&qwennhide::hooks::open_fn);
+            api_->pltHookRegister(0, 0, "openat",
+                (void *)qwennhide::fake_openat,
+                (void **)&qwennhide::hooks::openat_fn);
+            api_->pltHookRegister(0, 0, "readlink",
+                (void *)qwennhide::fake_readlink,
+                (void **)&qwennhide::hooks::readlink_fn);
+            api_->pltHookRegister(0, 0, "fopen",
+                (void *)qwennhide::fake_fopen,
+                (void **)&qwennhide::hooks::fopen_fn);
 
-        if (!api_->pltHookCommit()) {
-            LOGE("pltHookCommit failed");
+            if (!api_->pltHookCommit()) {
+                LOGE("pltHookCommit failed");
+            } else {
+                LOGI("all hooks committed");
+            }
+            // JANGAN unload module di mode agresif (hook harus resident)
         } else {
-            LOGI("hooks committed");
+            // MODE RINGAN: unload module agar tidak terdeteksi di /proc/self/maps
+            // Hanya mengandalkan FORCE_DENYLIST_UNMOUNT dari host
+            api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
         }
     }
 
-    // ⭐ PERBAIKAN: Tambahkan [[maybe_unused]] untuk args
     void postAppSpecialize([[maybe_unused]] const zygisk::AppSpecializeArgs *args) override {
         if (!target_) return;
+        if (!aggressive_) return;  // Mode ringan sudah unload di pre
 
         if (companion_fd_ >= 0) {
             pid_t self = getpid();
@@ -137,6 +178,7 @@ private:
     zygisk::Api *api_ = nullptr;
     JNIEnv *env_ = nullptr;
     bool target_ = false;
+    bool aggressive_ = false;
     int companion_fd_ = -1;
 };
 
