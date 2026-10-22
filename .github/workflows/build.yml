@@ -8,7 +8,7 @@ on:
 
 env:
   MODULE_ID: my_root_hider
-  MODULE_VERSION: v1.1.0
+  MODULE_VERSION: v1.2.0
 
 jobs:
   build:
@@ -26,7 +26,6 @@ jobs:
 
       - name: Install NDK
         run: |
-          # Path default Android SDK di GitHub Actions ubuntu-latest
           export ANDROID_HOME=/usr/local/lib/android/sdk
           export SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
           
@@ -36,16 +35,17 @@ jobs:
           echo "Menginstal NDK r27..."
           "$SDKMANAGER" "ndk;27.0.12077973"
           
-          # Set environment variables agar bisa dibaca oleh CMake
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> $GITHUB_ENV
           echo "NDK=$ANDROID_HOME/ndk/27.0.12077973" >> $GITHUB_ENV
 
       - name: Download zygisk.hpp
         run: |
           mkdir -p include
+          # URL resmi dari repository sample topjohnwu
           curl -sSL -o include/zygisk.hpp \
-            https://raw.githubusercontent.com/topjohnwu/Magisk/master/native/src/external/zygisk/api/zygisk.hpp
+            https://raw.githubusercontent.com/topjohnwu/zygisk-module-sample/master/module/jni/zygisk.hpp
           echo "zygisk.hpp berhasil didownload"
+          head -n 5 include/zygisk.hpp # Verifikasi isi file bukan 404
 
       - name: Build for arm64-v8a
         run: |
@@ -82,7 +82,6 @@ jobs:
           cp -r scripts/* module/
           cp -r META-INF module/
           chmod 755 module/*.sh
-          echo "Struktur module siap di-zip"
 
       - name: Create ZIP
         run: |
@@ -90,7 +89,6 @@ jobs:
           zip -r9 ../${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip .
           cd ..
           sha256sum ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip > checksum.txt
-          echo "Module ZIP berhasil dibuat"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
