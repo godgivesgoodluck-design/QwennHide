@@ -1,21 +1,37 @@
-cmake_minimum_required(VERSION 3.18.1)
-project("my_root_hider")
+cmake_minimum_required(VERSION 3.22)
+project(qwennhide LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(SOURCES
+option(QH_DEBUG "Enable logcat logging" OFF)
+
+add_library(qwennhide SHARED
     src/main.cpp
-    src/mount_utils.cpp
-    src/proc_filter.cpp
+    src/companion.cpp
+    src/props.cpp
 )
 
-add_library(my_root_hider SHARED ${SOURCES})
+target_include_directories(qwennhide PRIVATE include)
 
-target_include_directories(my_root_hider PRIVATE
-    ${CMAKE_SOURCE_DIR}/include
+target_compile_options(qwennhide PRIVATE
+    -O2
+    -Wall
+    -Wextra
+    -fno-exceptions
+    -fno-rtti
+    -ffunction-sections
+    -fdata-sections
+    -fvisibility-inlines-hidden
 )
 
-target_link_libraries(my_root_hider
-    log
+target_link_options(qwennhide PRIVATE
+    -Wl,--gc-sections
+    -Wl,--build-id=none
+    -Wl,-s
 )
+
+if(QH_DEBUG)
+    target_compile_definitions(qwennhide PRIVATE QH_DEBUG=1)
+    target_link_libraries(qwennhide PRIVATE log)
+endif()
