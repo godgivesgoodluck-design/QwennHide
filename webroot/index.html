@@ -1,1 +1,417 @@
-webroot/index.html
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QwennHide</title>
+<style>
+    :root {
+        --bg: #0f1115;
+        --card: #171a21;
+        --text: #e8eaed;
+        --muted: #9aa0a6;
+        --accent: #4da3ff;
+        --warn: #ffb84d;
+        --ok: #3ddc84;
+        --danger: #ff5c5c;
+        --border: #2a2f3a;
+    }
+
+    * {
+        box-sizing: border-box;
+    }
+
+    body {
+        margin: 0;
+        padding: 16px;
+        background: var(--bg);
+        color: var(--text);
+        font-family: system-ui, -apple-system, sans-serif;
+    }
+
+    h1 {
+        margin: 0 0 4px;
+        font-size: 22px;
+    }
+
+    .sub {
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 14px;
+    }
+
+    .card {
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 14px;
+        margin-bottom: 14px;
+    }
+
+    .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin: 8px 0;
+    }
+
+    select, input[type="text"] {
+        width: 100%;
+        background: #0d1015;
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px;
+        outline: none;
+    }
+
+    button {
+        background: var(--accent);
+        color: #fff;
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-weight: 600;
+    }
+
+    button.secondary {
+        background: #263042;
+    }
+
+    .toolbar {
+        display: flex;
+        gap: 8px;
+        margin-top: 10px;
+        flex-wrap: wrap;
+    }
+
+    .app {
+        padding: 12px 0;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .app:last-child {
+        border-bottom: 0;
+    }
+
+    .pkg {
+        font-size: 13px;
+        word-break: break-all;
+        margin-bottom: 8px;
+    }
+
+    .badges {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-top: 6px;
+    }
+
+    .badge {
+        font-size: 11px;
+        border-radius: 999px;
+        padding: 3px 8px;
+        background: #232a36;
+        color: var(--muted);
+    }
+
+    .badge.ok {
+        color: var(--ok);
+    }
+
+    .badge.warn {
+        color: var(--warn);
+    }
+
+    .badge.override {
+        color: var(--accent);
+    }
+
+    .small {
+        font-size: 12px;
+        color: var(--muted);
+        line-height: 1.4;
+    }
+
+    .warn {
+        color: var(--warn);
+    }
+
+    .error {
+        color: var(--danger);
+        white-space: pre-wrap;
+        font-family: monospace;
+        font-size: 12px;
+    }
+
+    .hidden {
+        display: none;
+    }
+</style>
+</head>
+<body>
+
+<h1>QwennHide</h1>
+<div class="sub">
+    Mode per-app + global default. Prop spoofing terpisah dan membutuhkan reboot.
+</div>
+
+<div class="card">
+    <div class="row">
+        <div>
+            <b>Default mode</b>
+            <div class="small">Untuk app yang tidak di-override.</div>
+        </div>
+        <select id="defaultMode" style="max-width: 180px;" onchange="setDefaultMode(this.value)">
+            <option value="basic">Basic</option>
+            <option value="aggressive">Aggressive</option>
+            <option value="persistent">Persistent</option>
+        </select>
+    </div>
+
+    <div class="row">
+        <div>
+            <b>Prop spoofing</b>
+            <div class="small warn">Global. Berubah setelah reboot.</div>
+        </div>
+        <select id="propSpoof" style="max-width: 180px;" onchange="setPropSpoof(this.value)">
+            <option value="0">OFF</option>
+            <option value="1">ON</option>
+        </select>
+    </div>
+</div>
+
+<div class="card">
+    <input id="search" type="text" placeholder="Cari package..." oninput="renderApps()">
+    <div class="toolbar">
+        <button onclick="refresh()">Refresh</button>
+        <button class="secondary" onclick="resetAllOverrides()">Reset semua override</button>
+    </div>
+    <div class="small" style="margin-top: 8px;">
+        App tetap harus berada di DenyList Magisk/NeoZygisk agar module aktif.
+        Jika badge <span class="warn">NOT in DenyList</span> muncul, tambahkan app tersebut ke DenyList.
+    </div>
+</div>
+
+<div id="status" class="card hidden"></div>
+<div id="list" class="card">Loading...</div>
+
+<script>
+const API = "/data/adb/modules/qwennhide/api.sh";
+
+let data = {
+    default_mode: "basic",
+    prop_spoof: "0",
+    apps: []
+};
+
+function showStatus(msg, isError = false) {
+    const el = document.getElementById("status");
+    el.className = "card";
+    el.innerHTML = isError
+        ? `<div class="error">${msg}</div>`
+        : `<div class="small">${msg}</div>`;
+    setTimeout(() => {
+        el.className = "card hidden";
+    }, 4000);
+}
+
+async function shell(cmd) {
+    // Sesuaikan dengan bridge KSU WebUI yang Anda pakai.
+    const bridges = [
+        window.ksu,
+        window.KSU,
+        window.kernelsu,
+        window.KernelSU,
+        window.webui
+    ];
+
+    for (const b of bridges) {
+        if (b && typeof b.exec === "function") {
+            const res = await b.exec(cmd);
+            if (typeof res === "string") return res;
+            if (res && typeof res.stdout === "string") return res.stdout;
+            if (res && typeof res.output === "string") return res.output;
+            return JSON.stringify(res);
+        }
+
+        if (b && typeof b.shell === "function") {
+            const res = await b.shell(cmd);
+            if (typeof res === "string") return res;
+            if (res && typeof res.stdout === "string") return res.stdout;
+            if (res && typeof res.output === "string") return res.output;
+            return JSON.stringify(res);
+        }
+    }
+
+    throw new Error(
+        "KSU WebUI bridge tidak ditemukan.\n" +
+        "Coba jalankan manual di terminal root:\n\n" +
+        "sh " + API + " list"
+    );
+}
+
+function parseJSON(text) {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start === -1 || end === -1) {
+        throw new Error("Response bukan JSON:\n" + text);
+    }
+    return JSON.parse(text.slice(start, end + 1));
+}
+
+function validPkg(pkg) {
+    return /^[A-Za-z0-9._]+$/.test(pkg);
+}
+
+function capitalize(s) {
+    return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+async function refresh() {
+    const listEl = document.getElementById("list");
+    try {
+        listEl.innerText = "Loading...";
+        const out = await shell(`sh ${API} list`);
+        data = parseJSON(out);
+
+        document.getElementById("defaultMode").value = data.default_mode || "basic";
+        document.getElementById("propSpoof").value = data.prop_spoof || "0";
+
+        renderApps();
+    } catch (e) {
+        listEl.innerHTML = `<div class="error">${e.message}</div>`;
+    }
+}
+
+function renderApps() {
+    const q = document.getElementById("search").value.toLowerCase();
+    const list = document.getElementById("list");
+    list.innerHTML = "";
+
+    const apps = (data.apps || []).filter(a => a.pkg.toLowerCase().includes(q));
+
+    if (!apps.length) {
+        list.innerText = "Tidak ada aplikasi.";
+        return;
+    }
+
+    for (const app of apps) {
+        const div = document.createElement("div");
+        div.className = "app";
+
+        const pkg = document.createElement("div");
+        pkg.className = "pkg";
+        pkg.innerText = app.pkg;
+        div.appendChild(pkg);
+
+        const sel = document.createElement("select");
+        sel.onchange = () => setAppMode(app.pkg, sel.value);
+
+        const options = ["default", "basic", "aggressive", "persistent"];
+        for (const v of options) {
+            const opt = document.createElement("option");
+            opt.value = v;
+
+            if (v === "default") {
+                opt.innerText = `Default (${data.default_mode})`;
+                opt.selected = !app.overridden;
+            } else {
+                opt.innerText = capitalize(v);
+                opt.selected = app.overridden && app.mode === v;
+            }
+
+            sel.appendChild(opt);
+        }
+
+        div.appendChild(sel);
+
+        const badges = document.createElement("div");
+        badges.className = "badges";
+
+        if (app.overridden) {
+            const b1 = document.createElement("span");
+            b1.className = "badge override";
+            b1.innerText = "OVERRIDE";
+            badges.appendChild(b1);
+        }
+
+        if (app.in_denylist) {
+            const b2 = document.createElement("span");
+            b2.className = "badge ok";
+            b2.innerText = "IN DENYLIST";
+            badges.appendChild(b2);
+        } else {
+            const b3 = document.createElement("span");
+            b3.className = "badge warn";
+            b3.innerText = "NOT IN DENYLIST";
+            badges.appendChild(b3);
+        }
+
+        div.appendChild(badges);
+        list.appendChild(div);
+    }
+}
+
+async function setAppMode(pkg, mode) {
+    try {
+        if (!validPkg(pkg)) {
+            showStatus("Package tidak valid.", true);
+            return;
+        }
+
+        if (!["default", "basic", "aggressive", "persistent"].includes(mode)) {
+            showStatus("Mode tidak valid.", true);
+            return;
+        }
+
+        await shell(`sh ${API} set ${pkg} ${mode}`);
+        showStatus(`Mode ${pkg} → ${mode}`);
+        await refresh();
+    } catch (e) {
+        showStatus(e.message, true);
+    }
+}
+
+async function setDefaultMode(mode) {
+    try {
+        await shell(`sh ${API} default ${mode}`);
+        showStatus(`Default mode → ${mode}`);
+        await refresh();
+    } catch (e) {
+        showStatus(e.message, true);
+    }
+}
+
+async function setPropSpoof(val) {
+    try {
+        const out = await shell(`sh ${API} prop ${val}`);
+        const obj = parseJSON(out);
+
+        if (obj.reboot_required) {
+            showStatus("Prop spoofing diubah. REBOOT diperlukan.", false);
+        }
+
+        await refresh();
+    } catch (e) {
+        showStatus(e.message, true);
+    }
+}
+
+async function resetAllOverrides() {
+    try {
+        if (!confirm("Hapus semua override per-app dan kembalikan ke default?")) return;
+        await shell(`sh ${API} reset-all`);
+        showStatus("Semua override dihapus.");
+        await refresh();
+    } catch (e) {
+        showStatus(e.message, true);
+    }
+}
+
+refresh();
+</script>
+
+</body>
+</html>
