@@ -1,5 +1,5 @@
-// QwennHide v2.0 - main.cpp
-// Adapted from proven MagiskHideX architecture + Volume Button Mode Switcher
+// QwennHide v2.1 - main.cpp
+// Optimized for GSI + Safe SU Isolation
 
 #include <cstdlib>
 #include <cstring>
@@ -10,7 +10,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/mount.h>
-#include <sys/socket.h>
 #include <android/log.h>
 #include <vector>
 #include <string>
@@ -25,66 +24,20 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
-#define DATADIR       "/data/adb/qwennhide"
-#define MODE_FILE     DATADIR "/mode" // "basic" or "aggressive"
-#define UMOUNT_LIST_F DATADIR "/umount_list"
+#define DATADIR   "/data/adb/qwennhide"
+#define MODE_FILE DATADIR "/mode"
 
 static const char *MAGISK_PATHS[] = {
     "/sbin/.magisk", "/data/adb/magisk", "/data/adb/modules",
-    "/data/adb/post-fs-data.d", "/data/adb/service.d",
     "/dev/.magisk", "/dev/.magisk.unblock", "/dev/zygisk", nullptr
 };
 
 static const char *SU_PATHS[] = {
     "/system/bin/su", "/system/xbin/su", "/sbin/su",
-    "/system/bin/.ext/.su", "/system/usr/we-need-root/su", nullptr
+    "/system/bin/.ext/.su", nullptr
 };
 
-static std::vector<std::string> readLines(const char *path) {
-    std::vector<std::string> result;
-    std::ifstream f(path);
-    if (!f.is_open()) return result;
-    std::string line;
-    while (std::getline(f, line)) {
-        if (!line.empty() && line[0] != '#') result.push_back(line);
-    }
-    return result;
-}
-
-static void unmountMagiskMounts() {
-    std::ifstream mi("/proc/self/mountinfo");
-    if (!mi.is_open()) return;
-
-    std::vector<std::pair<int, std::string>> to_unmount;
-    std::string line;
-
-    while (std::getline(mi, line)) {
-        std::istringstream ss(line);
-        int mount_id, parent_id;
-        std::string major_minor, root, mountpoint;
-        ss >> mount_id >> parent_id >> major_minor >> root >> mountpoint;
-
-        bool is_magisk = false;
-        for (int i = 0; MAGISK_PATHS[i]; i++) {
-            if (mountpoint.find(MAGISK_PATHS[i]) == 0 || mountpoint == MAGISK_PATHS[i]) {
-                is_magisk = true; break;
-            }
-        }
-        if (!is_magisk && (root.find("/magisk") != std::string::npos || root.find("/.magisk") != std::string::npos)) {
-            is_magisk = true;
-        }
-
-        if (is_magisk) to_unmount.push_back({mount_id, mountpoint});
-    }
-    mi.close();
-
-    for (auto it = to_unmount.rbegin(); it != to_unmount.rend(); ++it) {
-        if (umount2(it->second.c_str(), MNT_DETACH) == 0) {
-            LOGD("Unmounted: %s", it->second.c_str());
-        }
-    }
-}
-
+// ─── Utility: Close Leaked FDs ─────────────────────────────────────────
 static void closeMagiskFds() {
     DIR *fd_dir = opendir("/proc/self/fd");
     if (!fd_dir) return;
@@ -115,7 +68,39 @@ static void closeMagiskFds() {
     closedir(fd_dir);
 }
 
-// ─── Companion Handler (Root Context) ─────────────────────────────────────────
+// ─── Utility: Manual Unmount Fallback ──────────────────────────────────
+static void unmountMagiskMounts() {
+    std::ifstream mi("/proc/self/mountinfo");
+    if (!mi.is_open()) return;
+
+    std::vector<std::pair<int, std::string>> to_unmount;
+    std::string line;
+
+    while (std::getline(mi, line)) {
+        std::istringstream ss(line);
+        int mount_id, parent_id;
+        std::string major_minor, root, mountpoint;
+        ss >> mount_id >> parent_id >> major_minor >> root >> mountpoint;
+
+        bool is_magisk = false;
+        for (int i = 0; MAGISK_PATHS[i]; i++) {
+            if (mountpoint.find(MAGISK_PATHS[i]) == 0) { is_magisk = true; break; }
+        }
+        if (!is_magisk && root.find("magisk") != std::string::npos) is_magisk = true;
+
+        if (is_magisk) to_unmount.push_back({mount_id, mountpoint});
+    }
+    mi.close();
+
+    for (auto it = to_unmount.rbegin(); it != to_unmount.rend(); ++it) {
+        if (umount2(it->second.c_str(), MNT_DETACH) == 0) {
+            LOGD("Unmounted: %s", it->second.c_str());
+        }
+    }
+}
+
+// ─── Companion Handler (Root Context) ──────────────────────────────────
+// Mengirim: 0 = Skip, 1 = Basic Hide, 2 = Aggressive Hide
 static void companionHandler(int client_fd) {
     uint32_t len = 0;
     if (read(client_fd, &len, sizeof(len)) != sizeof(len) || len == 0 || len > 512) {
@@ -123,61 +108,41 @@ static void companionHandler(int client_fd) {
     }
 
     std::string pkgName(len, '\0');
-    if (read(client_fd, &pkgName[0], len) != (ssize_t)len) {
-        uint8_t resp = 0; write(client_fd, &resp, 1); return;
+    read(client_fd, &pkgName[0], len);
+
+    // Baca Mode (Aman karena di konteks root)
+    std::string mode = "basic";
+    std::ifstream mf(MODE_FILE);
+    if (mf.is_open()) std::getline(mf, mode);
+    bool is_aggressive = (mode.find("aggressive") != std::string::npos);
+
+    // Cek DenyList Magisk
+    bool in_denylist = false;
+    FILE *pipe = popen("magisk --denylist ls 2>/dev/null", "r");
+    if (pipe) {
+        char buf[256];
+        while (fgets(buf, sizeof(buf), pipe)) {
+            std::string entry(buf);
+            if (!entry.empty() && entry.back() == '\n') entry.pop_back();
+            size_t pipe_pos = entry.find('|');
+            std::string entry_pkg = (pipe_pos != std::string::npos) ? entry.substr(0, pipe_pos) : entry;
+            if (entry_pkg == pkgName) { in_denylist = true; break; }
+        }
+        pclose(pipe);
     }
 
-    bool aggressive_mode = false;
-    std::ifstream mode_file(MODE_FILE);
-    if (mode_file.is_open()) {
-        std::string mode; std::getline(mode_file, mode);
-        if (mode.find("aggressive") != std::string::npos) aggressive_mode = true;
+    uint8_t action = 0;
+    if (in_denylist) {
+        action = is_aggressive ? 2 : 1;
     }
 
-    uint8_t should_hide = 0;
-    if (aggressive_mode) {
-        // Aggressive: Check DenyList OR custom umount_list
-        FILE *pipe = popen("magisk --denylist ls 2>/dev/null", "r");
-        if (pipe) {
-            char buf[256];
-            while (fgets(buf, sizeof(buf), pipe)) {
-                std::string entry(buf);
-                if (!entry.empty() && entry.back() == '\n') entry.pop_back();
-                size_t pipe_pos = entry.find('|');
-                std::string entry_pkg = (pipe_pos != std::string::npos) ? entry.substr(0, pipe_pos) : entry;
-                if (entry_pkg == pkgName) { should_hide = 1; break; }
-            }
-            pclose(pipe);
-        }
-        if (!should_hide) {
-            for (auto &line : readLines(UMOUNT_LIST_F)) {
-                if (line == pkgName) { should_hide = 1; break; }
-            }
-        }
-    } else {
-        // Basic: Rely purely on host's native PROCESS_ON_DENYLIST flag
-        // We simulate this by returning 1 if we want the host to handle it, 
-        // but actually, in Basic mode, we just let the host do its job via FORCE_DENYLIST_UNMOUNT.
-        // To keep it simple and compatible, we check DenyList here too.
-        FILE *pipe = popen("magisk --denylist ls 2>/dev/null", "r");
-        if (pipe) {
-            char buf[256];
-            while (fgets(buf, sizeof(buf), pipe)) {
-                std::string entry(buf);
-                if (!entry.empty() && entry.back() == '\n') entry.pop_back();
-                size_t pipe_pos = entry.find('|');
-                std::string entry_pkg = (pipe_pos != std::string::npos) ? entry.substr(0, pipe_pos) : entry;
-                if (entry_pkg == pkgName) { should_hide = 1; break; }
-            }
-            pclose(pipe);
-        }
-    }
-
-    LOGI("Companion: [%s] mode=%s hide=%d", pkgName.c_str(), aggressive_mode ? "agg" : "basic", should_hide);
-    write(client_fd, &should_hide, 1);
+    LOGI("Companion: [%s] in_denylist=%d mode=%s -> action=%d", 
+         pkgName.c_str(), in_denylist, mode.c_str(), action);
+    
+    write(client_fd, &action, 1);
 }
 
-// ─── Main Module Class ────────────────────────────────────────────────────────
+// ─── Main Module ───────────────────────────────────────────────────────
 class QwennHide : public zygisk::ModuleBase {
 public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
@@ -185,7 +150,7 @@ public:
     }
 
     void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
-        should_hide = false;
+        hide_action = 0;
         if (!args->nice_name) { api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY); return; }
 
         const char *raw = env->GetStringUTFChars(args->nice_name, nullptr);
@@ -196,12 +161,9 @@ public:
         size_t colon = pkg.find(':');
         if (colon != std::string::npos) pkg = pkg.substr(0, colon);
 
+        // Tanya Companion
         int fd = api->connectCompanion();
-        if (fd < 0) {
-            LOGE("Companion connect failed");
-            api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-            return;
-        }
+        if (fd < 0) { api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY); return; }
 
         uint32_t len = (uint32_t)pkg.size();
         write(fd, &len, sizeof(len));
@@ -211,10 +173,12 @@ public:
         read(fd, &resp, 1);
         close(fd);
 
-        should_hide = (resp == 1);
+        hide_action = resp; // 0=Skip, 1=Basic, 2=Aggressive
 
-        if (should_hide) {
-            LOGI("Hiding root from: [%s]", pkg.c_str());
+        if (hide_action > 0) {
+            LOGI("Hiding [%s] mode=%d", pkg.c_str(), hide_action);
+            // Ini adalah kunci "SU Isolation":
+            // Memaksa Magisk melakukan unmount semua overlay & su dari namespace app ini
             api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
         } else {
             api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
@@ -222,15 +186,17 @@ public:
     }
 
     void postAppSpecialize([[maybe_unused]] const zygisk::AppSpecializeArgs *args) override {
-        if (!should_hide) return;
+        if (hide_action == 0) return;
 
-        // Aggressive cleanup (proven to work without triggering integrity checks)
-        closeMagiskFds();
-        unmountMagiskMounts();
+        if (hide_action == 2) {
+            // Aggressive: Tambahan cleanup manual
+            LOGD("Aggressive cleanup: FDs + Mounts");
+            closeMagiskFds();
+            unmountMagiskMounts();
+        }
 
-        // Unload ourselves — leave no trace
+        // Unload module agar tidak ada jejak di /proc/self/maps
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-        LOGD("postAppSpecialize: hiding complete, unloading");
     }
 
     void preServerSpecialize([[maybe_unused]] zygisk::ServerSpecializeArgs *args) override {
@@ -240,7 +206,7 @@ public:
 private:
     zygisk::Api *api = nullptr;
     JNIEnv *env = nullptr;
-    bool should_hide = false;
+    uint8_t hide_action = 0;
 };
 
 REGISTER_ZYGISK_MODULE(QwennHide)
