@@ -1,70 +1,74 @@
 # QwennHide
 
-Root hider untuk **Magisk Alpha + NeoZygisk** dengan **runtime mode switcher**. Baca otomatis DenyList Magisk — cukup centang aplikasi di Magisk, module menangani sisanya.
+Root hider untuk **Magisk Alpha / NeoZygisk / ZygiskNext** dengan **arsitektur companion-based**, **WebUI per-aplikasi**, dan **runtime mode switcher**. Adaptasi dari arsitektur [MagiskHideX](https://github.com/godgivesgoodluck-design/MagiskHideX) yang diperluas untuk kebutuhan GSI dan deteksi modern.
 
-![Version](https://img.shields.io/badge/version-v1.7.0-blue)
-![Magisk](https://img.shields.io/badge/Magisk-Alpha+-green)
-![License](https://img.shields.io/badge/license-MIT-orange)
-
----
-
-## ✨ Fitur Utama
-
-- ✅ **Auto DenyList** — Baca otomatis dari Magisk Alpha via native API (`PROCESS_ON_DENYLIST`)
-- ✅ **Zero Config** — Cukup centang aplikasi di Magisk DenyList, tidak perlu edit file
-- ✅ **Runtime Mode Switcher** — Ganti mode Basic/Aggressive via tombol **Action** di Magisk, tanpa reboot
-- ✅ **Dual-Mode Architecture**:
-  - **Basic Mode**: Module unload dari memory, minimal footprint
-  - **Aggressive Mode**: PLT hook + companion daemon untuk app agresif
-- ✅ **PLT Hooking** — Hook 9 fungsi syscall (`stat`, `open`, `openat`, `access`, dll)
-- ✅ **Property Spoofing** — Palsukan `ro.build.tags`, `ro.debuggable`, `ro.boot.*`, dll
-- ✅ **Path Hiding** — Sembunyikan `/system/bin/su`, `/data/adb`, `/debug_ramdisk`, dll
-- ✅ **Companion Daemon** — Root process untuk unmount namespace di app target
-- ✅ **Clean Uninstall** — Tidak meninggalkan bekas setelah dihapus
-- ✅ **Auto-Build** — GitHub Actions compile otomatis untuk arm64-v8a & armeabi-v7a
+![Version](https://img.shields.io/badge/version-v3.0.0-blue)
+![Platform](https://img.shields.io/badge/Android-8.0%2B-green)
+![Zygisk](https://img.shields.io/badge/Zygisk-Required-orange)
+![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
 ---
 
-## 📱 Cara Install
+## ⚠️ Baca Dulu: Apa yang Module Ini Lakukan & Tidak Lakukan
 
-### 1. Download Module
-- Buka tab **Actions** di repository GitHub
-- Klik workflow run terbaru (centang hijau ✅)
-- Download artifact `qwennhide-v1.7.0.zip` dari bagian **Artifacts**
+QwennHide adalah **Zygisk module user-space**. Ia bekerja dengan:
+- Meminta host (Magisk/NeoZygisk) melakukan unmount overlay dari namespace aplikasi target.
+- Membersihkan jejak file descriptor & mount secara manual sebagai lapisan tambahan.
+- Memalsukan properti sistem **secara global** (butuh reboot).
 
-### 2. Flash Module
-- Buka aplikasi **Magisk** → **Modules** → **Install from storage**
-- Pilih file `qwennhide-v1.7.0.zip`
-- **Reboot** perangkat
+Ia **TIDAK**:
+- Mengubah kernel, SELinux policy, atau attestation hardware.
+- Menjamin lolos dari aplikasi dengan **server-side detection** (data dikirim ke server, server yang memutuskan).
+- Mengalahkan teknik deteksi level kernel (KernelSU/APatch native) atau integrity check yang sangat agresif.
+- Menyembunyikan keberadaan host Zygisk itu sendiri (Magisk/NeoZygisk) dari detector yang membaca `/proc/self/maps` saat module resident.
 
-### 3. Konfigurasi DenyList
-- Buka **Magisk** → **Settings** ⚙️
-- Aktifkan **Zygisk**
-- **Enforce DenyList**: OFF (disarankan — module menangani sendiri)
-- Tap **Configure DenyList**
-- **Centang aplikasi** yang ingin disembunyikan rootnya
-- Selesai! Module otomatis mendeteksi saat aplikasi diluncurkan
+Jika tujuan Anda adalah **bypass 100% untuk aplikasi bank kelas atas**, module Zygisk user-space pada umumnya bukan alat yang tepat. Gunakan module ini untuk **aplikasi level menengah** dan sebagai **kerangka belajar/eksperimen** yang bersih dan mudah di-uninstall.
 
 ---
 
-## 🎛️ Cara Pakai: Mode Switcher
+## ✨ Fitur
 
-### Via Tombol Action (UI Magisk)
-1. Buka **Magisk** → **Modules**
-2. Cari module **QwennHide**
-3. Tap tombol **Action** 🎯
-4. Pilih mode:
-   - `[1]` Basic mode
-   - `[2]` Aggressive mode
-5. Perubahan berlaku untuk aplikasi yang diluncurkan **setelah toggle**
+- ✅ **Auto DenyList** — Baca target dari Magisk/NeoZygisk + custom `umount_list`. Tidak perlu Enforce DenyList.
+- ✅ **3 Mode Runtime** — Basic / Aggressive / Persistent, dipilih per-aplikasi via WebUI atau global via Action button.
+- ✅ **WebUI (KSU Standalone)** — Daftar hanya aplikasi di DenyList, mode selector di kanan tiap baris, indikator status simpan (✓/✗) per aplikasi.
+- ✅ **Companion IPC** — Keputusan mode diambil di konteks root, bukan di proses aplikasi (hindari masalah SELinux).
+- ✅ **Tanpa PLT Hook** — Hindari integrity check aplikasi modern (yang justru mendeteksi hook).
+- ✅ **Property Spoofing Global** — Opsional, dikontrol terpisah, butuh reboot. Termasuk spoofing untuk GSI (bootloader/encryption/build tags).
+- ✅ **NeoZygisk Aligned** — Tidak mengganggu daemon/host, skip path NeoZygisk saat unmount manual, `DLCLOSE` dipanggil maksimal 1× per lifecycle.
+- ✅ **Uninstall Bersih** — Tidak menulis state persisten di luar folder module; reboot mengembalikan properti asli.
+- ✅ **Auto-Build** — GitHub Actions untuk `arm64-v8a` & `armeabi-v7a`.
 
-### Via Terminal
-```bash
-# Cek mode saat ini
-su -c /data/adb/modules/qwennhide/action.sh status
+---
 
-# Switch ke aggressive
-su -c /data/adb/modules/qwennhide/action.sh aggressive
+## 🏗️ Arsitektur 3 Mode
 
-# Switch ke basic
-su -c /data/adb/modules/qwennhide/action.sh basic
+| Mode | Host Unmount | Manual FD/Mount Cleanup | NeoZygisk Trace Cleanup | Module Unload (DLCLOSE) | Jejak di `/proc/self/maps` |
+|---|---|---|---|---|---|
+| **Basic** | ✅ | ❌ | ❌ | ✅ | Bersih |
+| **Aggressive** | ✅ | ✅ | ✅ | ✅ | Bersih |
+| **Persistent** | ✅ | ✅ | ✅ | ❌ | **Module terlihat** |
+
+**Penjelasan singkat:**
+- **Basic** — Ringan, cepat, andalkan host. Cocok untuk aplikasi yang hanya cek saat launch.
+- **Aggressive** — Tambah cleanup manual FD + mount Magisk + jejak NeoZygisk. Cocok untuk aplikasi yang scan `/proc/self/fd` dan `/proc/self/mountinfo`.
+- **Persistent** — Module tetap resident di memory. **Dibuat untuk aplikasi yang melakukan periodic root check** (cek berulang saat app berjalan). Trade-off: module terlihat di maps, jadi aplikasi yang scan maps bisa menemukannya.
+
+> ⚠️ **Catatan jujur soal Persistent:** Mode ini menjaga kode module tetap di memory, tetapi **tidak memasang hook aktif**. Ia tidak "menyembunyikan" jejak baru secara real-time — ia hanya mencegah module unload sehingga cleanup awal tetap berlaku. Untuk aplikasi dengan periodic check yang membaca ulang `/proc/self/maps`, mode ini **belum tentu lolos**. Uji di device Anda.
+
+---
+
+## 📥 Instalasi
+
+### Prasyarat
+- Magisk Alpha ≥ 26402 **atau** NeoZygisk / ZygiskNext
+- **Zygisk aktif**
+- **Enforce DenyList: OFF** (module menangani sendiri via companion)
+- Manager yang support **KSU WebUI** (untuk WebUI). Tanpa WebUI, gunakan Action button sebagai fallback.
+
+### Langkah
+1. Download artifact `qwennhide-v3.0.0.zip` dari tab **Actions** → run sukses → **Artifacts**.
+2. Flash via Magisk/NeoZygisk → **Reboot**.
+3. Buka **Magisk → Configure DenyList** → centang aplikasi target.
+4. **(Wajib untuk test)** Clear data aplikasi target:
+   ```bash
+   adb shell pm clear <package.name>
