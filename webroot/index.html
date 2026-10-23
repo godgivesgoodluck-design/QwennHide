@@ -24,10 +24,13 @@
     .app-right{flex-shrink:0}
     select.app-mode{width:auto;min-width:140px;padding:8px}
 
+    .app-status{font-size:11px;margin-top:5px}
+    .app-status.saving{color:var(--muted)}
+    .app-status.ok{color:var(--ok)}
+    .app-status.error{color:var(--danger)}
+
     .badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
     .badge{font-size:11px;border-radius:999px;padding:3px 8px;background:#232a36;color:var(--muted)}
-    .badge.ok{color:var(--ok)}
-    .badge.warn{color:var(--warn)}
     .badge.override{color:var(--accent)}
     .small{font-size:12px;color:var(--muted);line-height:1.4}
     .warn{color:var(--warn)}
@@ -37,7 +40,7 @@
 </head>
 <body>
 <h1>QwennHide</h1>
-<div class="sub">Hanya aplikasi di DenyList yang ditampilkan. Mode per-app + default global.</div>
+<div class="sub">Hanya aplikasi di DenyList. Indikator ✓/✗ menunjukkan hasil penyimpanan mode.</div>
 
 <div class="card">
     <div class="row">
@@ -75,11 +78,21 @@
 const API="/data/adb/modules/qwennhide/api.sh";
 let data={default_mode:"basic",prop_spoof:"0",apps:[]};
 
+// Status per-aplikasi: { pkg: {state:'saving'|'ok'|'error', msg} }
+let rowStatus={};
+let rowTimers={};
+
 function showStatus(msg,isError=false){
     const el=document.getElementById("status");
     el.className="card";
     el.innerHTML=isError?`<div class="error">${msg}</div>`:`<div class="small">${msg}</div>`;
-    setTimeout(()=>{el.className="card hidden"},4000);
+    setTimeout(()=>{el.className="card hidden"},4500);
+}
+
+function setRowStatus(pkg,state,msg){ rowStatus[pkg]={state,msg}; }
+function scheduleClear(pkg,delay){
+    if(rowTimers[pkg])clearTimeout(rowTimers[pkg]);
+    rowTimers[pkg]=setTimeout(()=>{delete rowStatus[pkg];renderApps();},delay);
 }
 
 async function shell(cmd){
@@ -105,124 +118,4 @@ async function shell(cmd){
 
 function parseJSON(t){
     const s=t.indexOf("{"),e=t.lastIndexOf("}");
-    if(s===-1||e===-1)throw new Error("Response bukan JSON:\n"+t);
-    return JSON.parse(t.slice(s,e+1));
-}
-
-function validPkg(p){return /^[A-Za-z0-9._]+$/.test(p)}
-function cap(s){return s.charAt(0).toUpperCase()+s.slice(1)}
-
-async function refresh(){
-    const list=document.getElementById("list");
-    try{
-        list.innerText="Loading...";
-        const out=await shell(`sh ${API} list`);
-        data=parseJSON(out);
-        document.getElementById("defaultMode").value=data.default_mode||"basic";
-        document.getElementById("propSpoof").value=data.prop_spoof||"0";
-        renderApps();
-    }catch(e){
-        list.innerHTML=`<div class="error">${e.message}</div>`;
-    }
-}
-
-function renderApps(){
-    const q=document.getElementById("search").value.toLowerCase();
-    const list=document.getElementById("list");
-    list.innerHTML="";
-
-    const apps=(data.apps||[]).filter(a=>a.pkg.toLowerCase().includes(q));
-
-    if(!apps.length){
-        list.innerText="Tidak ada aplikasi di DenyList.\nTambahkan aplikasi ke DenyList terlebih dahulu, lalu Refresh.";
-        return;
-    }
-
-    for(const app of apps){
-        const row=document.createElement("div");
-        row.className="app";
-
-        // ─── Kiri: package + badge ───
-        const left=document.createElement("div");
-        left.className="app-left";
-
-        const pkg=document.createElement("div");
-        pkg.className="pkg";
-        pkg.innerText=app.pkg;
-        left.appendChild(pkg);
-
-        if(app.overridden){
-            const badges=document.createElement("div");
-            badges.className="badges";
-            const b=document.createElement("span");
-            b.className="badge override";
-            b.innerText="OVERRIDE";
-            badges.appendChild(b);
-            left.appendChild(badges);
-        }
-
-        // ─── Kanan: mode selector ───
-        const right=document.createElement("div");
-        right.className="app-right";
-
-        const sel=document.createElement("select");
-        sel.className="app-mode";
-        sel.onchange=()=>setAppMode(app.pkg,sel.value);
-
-        for(const v of["default","basic","aggressive","persistent"]){
-            const o=document.createElement("option");
-            o.value=v;
-            if(v==="default"){
-                o.innerText=`Default (${data.default_mode})`;
-                o.selected=!app.overridden;
-            }else{
-                o.innerText=cap(v);
-                o.selected=app.overridden&&app.mode===v;
-            }
-            sel.appendChild(o);
-        }
-        right.appendChild(sel);
-
-        row.appendChild(left);
-        row.appendChild(right);
-        list.appendChild(row);
-    }
-}
-
-async function setAppMode(pkg,mode){
-    try{
-        if(!validPkg(pkg)){showStatus("Package tidak valid.",true);return}
-        if(!["default","basic","aggressive","persistent"].includes(mode)){showStatus("Mode tidak valid.",true);return}
-        await shell(`sh ${API} set ${pkg} ${mode}`);
-        showStatus(`Mode ${pkg} → ${mode}`);
-        await refresh();
-    }catch(e){showStatus(e.message,true)}
-}
-
-async function setDefaultMode(mode){
-    try{await shell(`sh ${API} default ${mode}`);showStatus(`Default mode → ${mode}`);await refresh()}
-    catch(e){showStatus(e.message,true)}
-}
-
-async function setPropSpoof(v){
-    try{
-        const out=await shell(`sh ${API} prop ${v}`);
-        const o=parseJSON(out);
-        if(o.reboot_required)showStatus("Prop spoofing diubah. REBOOT diperlukan.");
-        await refresh();
-    }catch(e){showStatus(e.message,true)}
-}
-
-async function resetAllOverrides(){
-    try{
-        if(!confirm("Hapus semua override per-app?"))return;
-        await shell(`sh ${API} reset-all`);
-        showStatus("Semua override dihapus.");
-        await refresh();
-    }catch(e){showStatus(e.message,true)}
-}
-
-refresh();
-</script>
-</body>
-</html>
+    if(s===-1
