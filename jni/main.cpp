@@ -221,7 +221,7 @@ public:
         }
     }
 
-    void postAppSpecialize(const zygisk::AppSpecializeArgs *args) override {
+    void postAppSpecialize([[maybe_unused]] const zygisk::AppSpecializeArgs *args) override {
         if (!should_hide) return;
 
         // Aggressive cleanup (proven to work without triggering integrity checks)
@@ -233,7 +233,7 @@ public:
         LOGD("postAppSpecialize: hiding complete, unloading");
     }
 
-    void preServerSpecialize(zygisk::ServerSpecializeArgs *args) override {
+    void preServerSpecialize([[maybe_unused]] zygisk::ServerSpecializeArgs *args) override {
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
     }
 
