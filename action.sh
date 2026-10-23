@@ -21,9 +21,22 @@ set_mode() {
 # Non-interactive mode
 if [ -n "$1" ]; then
     case "$1" in
-        basic|aggressive) set_mode "$1"; echo "Mode: $1"; exit 0 ;;
-        status) echo "Current: $(get_mode)"; exit 0 ;;
-        *) echo "Usage: $0 [basic|aggressive|status]"; exit 1 ;;
+        basic|aggressive)
+            set_mode "$1"
+            echo "Mode: $1"
+            echo ""
+            echo "Note: Per-process cleanup takes effect immediately."
+            echo "      Property spoofing requires REBOOT to apply."
+            exit 0
+            ;;
+        status)
+            echo "Current: $(get_mode)"
+            exit 0
+            ;;
+        *)
+            echo "Usage: $0 [basic|aggressive|status]"
+            exit 1
+            ;;
     esac
 fi
 
@@ -35,8 +48,15 @@ echo "   QwennHide Mode Switcher"
 echo "================================"
 echo "Current mode: $current"
 echo ""
-echo "  [VOL UP]   → Basic mode (Host handles unmount)"
-echo "  [VOL DOWN] → Aggressive mode (Host + Manual FD/Mount cleanup)"
+echo "  [VOL UP]   → Basic mode"
+echo "               (Minimal: host unmount only)"
+echo ""
+echo "  [VOL DOWN] → Aggressive mode"
+echo "               (Full: host + manual cleanup"
+echo "                + aggressive property spoof)"
+echo ""
+echo "⚠️  Property spoofing changes need REBOOT"
+echo "    Per-process cleanup is immediate"
 echo ""
 echo "Press a volume button within 30 seconds..."
 
@@ -67,5 +87,8 @@ done
 set_mode "$choice"
 echo ""
 echo "✓ Switched to $(echo $choice | tr '[:lower:]' '[:upper:]') mode"
-echo "  Takes effect on next app launch."
-sleep 2
+echo ""
+echo "Per-process cleanup: IMMEDIATE (next app launch)"
+echo "Property spoofing:   REBOOT REQUIRED"
+echo ""
+sleep 3
