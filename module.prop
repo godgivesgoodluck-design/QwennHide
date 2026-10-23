@@ -2,5 +2,5 @@ id=qwennhide
 name=QwennHide
 version=v1.7.0
 versionCode=7
-author=YourName
+author=Qwenn
 description=Per-process root hiding with runtime mode switcher. Action button to toggle Basic/Aggressive mode.
