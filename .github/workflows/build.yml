@@ -1,4 +1,4 @@
-name: Build QwennHide v2.0
+name: Build QwennHide
 
 on:
   push:
@@ -8,15 +8,14 @@ on:
 
 env:
   MODULE_ID: qwennhide
-  MODULE_VERSION: v2.0.0
+  MODULE_VERSION: v3.0.0
 
 jobs:
   build:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Install NDK
         run: |
@@ -42,13 +41,11 @@ jobs:
           cd build/arm64-v8a
           cmake ../.. -GNinja \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-26 \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build .
           cd ../..
           cp build/arm64-v8a/libqwennhide.so zygisk/arm64-v8a.so
-          ls -lh zygisk/arm64-v8a.so
 
       - name: Build armeabi-v7a
         run: |
@@ -56,57 +53,51 @@ jobs:
           cd build/armeabi-v7a
           cmake ../.. -GNinja \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=armeabi-v7a \
-            -DANDROID_PLATFORM=android-26 \
+            -DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build .
           cd ../..
           cp build/armeabi-v7a/libqwennhide.so zygisk/armeabi-v7a.so
-          ls -lh zygisk/armeabi-v7a.so
 
       - name: Package module
         run: |
           mkdir -p pkg/META-INF/com/google/android
-          
-          # Copy file-file dari root folder (struktur baru)
+
           cp module.prop pkg/
           cp customize.sh pkg/
           cp service.sh pkg/
           cp action.sh pkg/
           cp uninstall.sh pkg/
-          
-          # Copy folder zygisk dan META-INF
+          cp api.sh pkg/
+          cp -r webroot pkg/
           cp -r zygisk pkg/
+
           cp META-INF/com/google/android/update-binary pkg/META-INF/com/google/android/
           cp META-INF/com/google/android/updater-script pkg/META-INF/com/google/android/
-          
-          # Set permissions
+
           chmod 755 pkg/customize.sh
           chmod 755 pkg/service.sh
           chmod 755 pkg/action.sh
           chmod 755 pkg/uninstall.sh
+          chmod 755 pkg/api.sh
           chmod 755 pkg/zygisk
           chmod 755 pkg/zygisk/*.so
-          
+          chmod 755 pkg/webroot
+          find pkg/webroot -type f -exec chmod 644 {} \;
+
           cd pkg
           zip -r9 ../${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip .
           cd ..
-          
           sha256sum ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip > checksum.txt
 
-      - name: Verify package contents
+      - name: Verify package
         run: |
-          echo "=== Package Contents ==="
           unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip
-          
-          echo ""
-          echo "=== Verification ==="
-          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "action.sh" && echo "✓ action.sh present" || (echo "✗ action.sh MISSING!"; exit 1)
-          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "customize.sh" && echo "✓ customize.sh present" || (echo "✗ customize.sh MISSING!"; exit 1)
-          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "zygisk/arm64-v8a.so" && echo "✓ arm64-v8a.so present" || (echo "✗ arm64-v8a.so MISSING!"; exit 1)
+          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "webroot/index.html" || (echo "webroot MISSING"; exit 1)
+          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "api.sh" || (echo "api.sh MISSING"; exit 1)
+          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "zygisk/arm64-v8a.so" || (echo "arm64 MISSING"; exit 1)
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}
           path: |
