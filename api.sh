@@ -74,6 +74,8 @@ cmd_list() {
     local default prop
     default=$(get_default_mode)
     prop=$(get_prop)
+
+    # Ambil daftar DenyList (sudah dedup via sort -u)
     get_denylist > "$DENY_TMP" 2>/dev/null
 
     printf '{'
@@ -81,25 +83,25 @@ cmd_list() {
     printf '"prop_spoof":"%s",' "$prop"
     printf '"apps":['
 
-    local first=1 pkg override mode overridden deny
-    for pkg in $(pm list packages -3 2>/dev/null | sed 's/^package://' | sort); do
+    local first=1 pkg override mode overridden
+    # HANYA iterasi app yang ada di DenyList
+    while IFS= read -r pkg; do
         [ -z "$pkg" ] && continue
+
         override=$(get_app_override "$pkg")
         if [ -n "$override" ]; then
-            mode="$override"; overridden=true
+            mode="$override"
+            overridden=true
         else
-            mode="$default"; overridden=false
+            mode="$default"
+            overridden=false
         fi
-        if grep -Fxq "$pkg" "$DENY_TMP" 2>/dev/null; then
-            deny=true
-        else
-            deny=false
-        fi
+
         [ $first -eq 0 ] && printf ','
-        printf '\n{"pkg":"%s","mode":"%s","overridden":%s,"in_denylist":%s}' \
-            "$pkg" "$mode" "$overridden" "$deny"
+        printf '\n{"pkg":"%s","mode":"%s","overridden":%s}' \
+            "$pkg" "$mode" "$overridden"
         first=0
-    done
+    done < "$DENY_TMP"
 
     printf '\n]}\n'
     rm -f "$DENY_TMP"
