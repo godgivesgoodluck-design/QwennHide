@@ -1,9 +1,14 @@
 #!/system/bin/sh
 # ═══════════════════════════════════════════════════════════════════════
-# QwennHide — action.sh
-# Menu navigasi via tombol volume:
+# QwennHide — action.sh (3 Mode)
+#
 #   VOL DOWN  → Pindah pilihan ke bawah (wrap-around)
 #   VOL UP    → Konfirmasi / OK
+#
+# Modes:
+#   1. Basic      → Host unmount + DLCLOSE
+#   2. Aggressive → Full cleanup + DLCLOSE
+#   3. Persistent → Full cleanup + NO DLCLOSE (module stays resident)
 # ═══════════════════════════════════════════════════════════════════════
 
 DATADIR="/data/adb/qwennhide"
@@ -32,41 +37,55 @@ draw_menu() {
 
     clear
     echo ""
-    echo "  ╔══════════════════════════════╗"
-    echo "  ║     QwennHide Mode Switcher  ║"
-    echo "  ╚══════════════════════════════╝"
+    echo "  ╔══════════════════════════════════╗"
+    echo "  ║    QwennHide Mode Switcher       ║"
+    echo "  ╚══════════════════════════════════╝"
     echo ""
-    echo "  Current mode : $cur"
+    echo "  Current : $cur"
     echo ""
-    echo "  Select mode:"
+    echo "  Select:"
     echo ""
 
+    # Option 0: Basic
     if [ $sel -eq 0 ]; then
         echo "    ▶ Basic"
-        echo "      Aggressive"
-    elif [ $sel -eq 1 ]; then
+    else
         echo "      Basic"
+    fi
+
+    # Option 1: Aggressive
+    if [ $sel -eq 1 ]; then
         echo "    ▶ Aggressive"
+    else
+        echo "      Aggressive"
+    fi
+
+    # Option 2: Persistent
+    if [ $sel -eq 2 ]; then
+        echo "    ▶ Persistent"
+    else
+        echo "      Persistent"
     fi
 
     echo ""
-    echo "  ─────────────────────────────"
+    echo "  ─────────────────────────────────"
     echo "  VOL DOWN  → Move selection"
     echo "  VOL UP    → Confirm (OK)"
-    echo "  ─────────────────────────────"
+    echo "  ─────────────────────────────────"
     echo ""
     printf "  Timeout: %ds" "$rem"
 }
 
-# ─── Non-interactive mode (untuk scripting/terminal) ────────────────────
+# ─── Non-interactive mode ──────────────────────────────────────────────
 
 if [ -n "$1" ]; then
     case "$1" in
-        basic|aggressive)
+        basic|aggressive|persistent)
             set_mode "$1"
             echo "Mode switched to: $1"
-            echo "Per-process cleanup: immediate"
-            echo "Property spoofing:   reboot required"
+            echo ""
+            echo "Per-process cleanup : immediate"
+            echo "Property spoofing   : reboot required"
             exit 0
             ;;
         status)
@@ -74,13 +93,13 @@ if [ -n "$1" ]; then
             exit 0
             ;;
         *)
-            echo "Usage: $0 [basic|aggressive|status]"
+            echo "Usage: $0 [basic|aggressive|persistent|status]"
             exit 1
             ;;
     esac
 fi
 
-# ─── Cek getevent ───────────────────────────────────────────────────────
+# ─── Cek getevent ──────────────────────────────────────────────────────
 
 if ! command -v getevent >/dev/null 2>&1; then
     echo ""
@@ -88,22 +107,25 @@ if ! command -v getevent >/dev/null 2>&1; then
     echo "Use terminal instead:"
     echo "  $0 basic"
     echo "  $0 aggressive"
+    echo "  $0 persistent"
     echo "  $0 status"
     exit 1
 fi
 
-# ─── Interactive menu navigation ────────────────────────────────────────
+# ─── Menu navigation ───────────────────────────────────────────────────
 
 current=$(get_mode)
 selection=0
-total=2
+total=3
 timeout=60
 start_time=$(date +%s)
 
 # Set posisi awal sesuai mode aktif
-if [ "$current" = "aggressive" ]; then
-    selection=1
-fi
+case "$current" in
+    aggressive) selection=1 ;;
+    persistent) selection=2 ;;
+    *)          selection=0 ;;
+esac
 
 while true; do
     now=$(date +%s)
@@ -113,48 +135,57 @@ while true; do
     if [ $remaining -le 0 ]; then
         clear
         echo ""
-        echo "  Timeout. No selection made."
-        echo "  Mode remains: $current"
+        echo "  Timeout. Mode remains: $current"
         exit 0
     fi
 
-    # Gambar menu
     draw_menu $selection "$current" $remaining
 
-    # Baca event volume (timeout 1 detik agar countdown update)
     event=$(timeout 1 getevent -l 2>/dev/null \
         | grep -E "KEY_VOLUME(UP|DOWN).*DOWN" \
         | head -1)
 
     if echo "$event" | grep -q "KEY_VOLUMEDOWN"; then
-        # Pindah pilihan ke bawah, wrap ke atas jika mentok
         selection=$(( (selection + 1) % total ))
-        sleep 0.2  # Debounce: cegah double-trigger
+        sleep 0.2
 
     elif echo "$event" | grep -q "KEY_VOLUMEUP"; then
-        # Konfirmasi pilihan
         clear
         echo ""
+
         if [ $selection -eq 0 ]; then
             set_mode "basic"
-            echo "  ╔══════════════════════════════╗"
-            echo "  ║   ✓ Mode set to BASIC        ║"
-            echo "  ╚══════════════════════════════╝"
+            echo "  ╔══════════════════════════════════╗"
+            echo "  ║  ✓ Mode: BASIC                   ║"
+            echo "  ╚══════════════════════════════════╝"
             echo ""
             echo "  Host unmount only."
             echo "  Module unloads after hide."
-        else
+            echo "  Lightest footprint."
+
+        elif [ $selection -eq 1 ]; then
             set_mode "aggressive"
-            echo "  ╔══════════════════════════════╗"
-            echo "  ║   ✓ Mode set to AGGRESSIVE   ║"
-            echo "  ╚══════════════════════════════╝"
+            echo "  ╔══════════════════════════════════╗"
+            echo "  ║  ✓ Mode: AGGRESSIVE              ║"
+            echo "  ╚══════════════════════════════════╝"
             echo ""
-            echo "  Host + manual cleanup + NeoZygisk traces."
+            echo "  Host + manual + NeoZygisk cleanup."
             echo "  Module unloads after hide."
+
+        elif [ $selection -eq 2 ]; then
+            set_mode "persistent"
+            echo "  ╔══════════════════════════════════╗"
+            echo "  ║  ✓ Mode: PERSISTENT              ║"
+            echo "  ╚══════════════════════════════════╝"
+            echo ""
+            echo "  Full cleanup + module stays resident."
+            echo "  Handles periodic root checks."
+            echo "  ⚠ Module visible in /proc/self/maps"
         fi
+
         echo ""
-        echo "  Per-process cleanup : immediate (next app launch)"
-        echo "  Property spoofing   : reboot required"
+        echo "  Per-process : immediate"
+        echo "  Properties  : reboot required"
         echo ""
         sleep 3
         exit 0
