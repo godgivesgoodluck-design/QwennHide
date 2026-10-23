@@ -3,56 +3,148 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <title>QwennHide</title>
 <style>
-    :root{--bg:#0f1115;--card:#171a21;--text:#e8eaed;--muted:#9aa0a6;--accent:#4da3ff;--warn:#ffb84d;--ok:#3ddc84;--danger:#ff5c5c;--border:#2a2f3a}
+    :root{
+        --bg:#0f1115;
+        --card:#171a21;
+        --text:#e8eaed;
+        --muted:#9aa0a6;
+        --accent:#4da3ff;
+        --warn:#ffb84d;
+        --ok:#3ddc84;
+        --danger:#ff5c5c;
+        --border:#2a2f3a;
+    }
     *{box-sizing:border-box}
-    body{margin:0;padding:16px;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,sans-serif}
+    body{
+        margin:0;
+        padding:16px;
+        background:var(--bg);
+        color:var(--text);
+        font-family:system-ui,-apple-system,sans-serif;
+    }
     h1{margin:0 0 4px;font-size:22px}
     .sub{color:var(--muted);font-size:12px;margin-bottom:14px}
-    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:14px}
-    .row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0}
-    select,input[type="text"]{width:100%;background:#0d1015;color:var(--text);border:1px solid var(--border);border-radius:10px;padding:10px;outline:none}
-    button{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 12px;font-weight:600}
+    .card{
+        background:var(--card);
+        border:1px solid var(--border);
+        border-radius:14px;
+        padding:14px;
+        margin-bottom:14px;
+    }
+    .row{
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:10px;
+        margin:8px 0;
+    }
+    select,input[type="text"]{
+        width:100%;
+        background:#0d1015;
+        color:var(--text);
+        border:1px solid var(--border);
+        border-radius:10px;
+        padding:10px;
+        outline:none;
+    }
+    button{
+        background:var(--accent);
+        color:#fff;
+        border:0;
+        border-radius:10px;
+        padding:10px 12px;
+        font-weight:600;
+    }
     button.secondary{background:#263042}
-    .toolbar{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
-
-    .app{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)}
+    button.warn{background:#7a5a1f}
+    .toolbar{
+        display:flex;
+        gap:8px;
+        margin-top:10px;
+        flex-wrap:wrap;
+    }
+    .app{
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:12px;
+        padding:12px 0;
+        border-bottom:1px solid var(--border);
+    }
     .app:last-child{border-bottom:0}
     .app-left{flex:1;min-width:0}
     .pkg{font-size:13px;word-break:break-all}
     .app-right{flex-shrink:0}
     select.app-mode{width:auto;min-width:140px;padding:8px}
-
     .app-status{font-size:11px;margin-top:5px}
     .app-status.saving{color:var(--muted)}
     .app-status.ok{color:var(--ok)}
     .app-status.error{color:var(--danger)}
-
     .badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
-    .badge{font-size:11px;border-radius:999px;padding:3px 8px;background:#232a36;color:var(--muted)}
+    .badge{
+        font-size:11px;
+        border-radius:999px;
+        padding:3px 8px;
+        background:#232a36;
+        color:var(--muted);
+    }
     .badge.override{color:var(--accent)}
     .small{font-size:12px;color:var(--muted);line-height:1.4}
     .warn{color:var(--warn)}
-    .error{color:var(--danger);white-space:pre-wrap;font-family:monospace;font-size:12px}
+    .ok{color:var(--ok)}
+    .danger{color:var(--danger)}
+    .error{
+        color:var(--danger);
+        white-space:pre-wrap;
+        font-family:monospace;
+        font-size:12px;
+    }
+    .mono{
+        font-family:monospace;
+        font-size:11px;
+        white-space:pre-wrap;
+        word-break:break-all;
+        background:#0d1015;
+        border:1px solid var(--border);
+        border-radius:10px;
+        padding:10px;
+        margin-top:8px;
+        max-height:220px;
+        overflow:auto;
+    }
     .hidden{display:none}
 </style>
 </head>
 <body>
+
 <h1>QwennHide</h1>
-<div class="sub">Hanya aplikasi di DenyList. Indikator ✓/✗ menunjukkan hasil penyimpanan mode.</div>
+<div class="sub">
+    WebUI v3.0.1 — hanya menampilkan aplikasi yang terdeteksi ada di DenyList.
+</div>
 
 <div class="card">
     <div class="row">
-        <div><b>Default mode</b><div class="small">Untuk app yang tidak di-override.</div></div>
+        <div>
+            <b>Default mode</b>
+            <div class="small">Untuk app yang tidak di-override.</div>
+        </div>
         <select id="defaultMode" style="max-width:180px" onchange="setDefaultMode(this.value)">
             <option value="basic">Basic</option>
             <option value="aggressive">Aggressive</option>
             <option value="persistent">Persistent</option>
         </select>
     </div>
+
     <div class="row">
-        <div><b>Prop spoofing</b><div class="small warn">Global. Berubah setelah reboot.</div></div>
+        <div>
+            <b>Prop spoofing</b>
+            <div class="small warn">Global. Berubah setelah reboot.</div>
+        </div>
         <select id="propSpoof" style="max-width:180px" onchange="setPropSpoof(this.value)">
             <option value="0">OFF</option>
             <option value="1">ON</option>
@@ -64,58 +156,448 @@
     <input id="search" type="text" placeholder="Cari package di DenyList..." oninput="renderApps()">
     <div class="toolbar">
         <button onclick="refresh()">Refresh</button>
-        <button class="secondary" onclick="resetAllOverrides()">Reset semua override</button>
+        <button class="warn" onclick="loadDiag()">Debug Denylist</button>
+        <button class="secondary" onclick="resetAllOverrides()">Reset override</button>
     </div>
     <div class="small" style="margin-top:8px">
-        Daftar diambil dari DenyList Magisk/NeoZygisk + custom umount_list.
+        Sumber: <code>magisk --denylist ls</code>, file denylist NeoZygisk/ZygiskNext, dan
+        <code>/data/adb/qwennhide/umount_list</code>.
     </div>
 </div>
 
 <div id="status" class="card hidden"></div>
+<div id="diag" class="card hidden"></div>
 <div id="list" class="card">Loading...</div>
 
 <script>
-const API="/data/adb/modules/qwennhide/api.sh";
-let data={default_mode:"basic",prop_spoof:"0",apps:[]};
+const API = "/data/adb/modules/qwennhide/api.sh";
 
-// Status per-aplikasi: { pkg: {state:'saving'|'ok'|'error', msg} }
-let rowStatus={};
-let rowTimers={};
+let data = {
+    default_mode: "basic",
+    prop_spoof: "0",
+    apps: []
+};
 
-function showStatus(msg,isError=false){
-    const el=document.getElementById("status");
-    el.className="card";
-    el.innerHTML=isError?`<div class="error">${msg}</div>`:`<div class="small">${msg}</div>`;
-    setTimeout(()=>{el.className="card hidden"},4500);
+let rowStatus = {};
+let rowTimers = {};
+
+function escapeHtml(s) {
+    return String(s ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
 }
 
-function setRowStatus(pkg,state,msg){ rowStatus[pkg]={state,msg}; }
-function scheduleClear(pkg,delay){
-    if(rowTimers[pkg])clearTimeout(rowTimers[pkg]);
-    rowTimers[pkg]=setTimeout(()=>{delete rowStatus[pkg];renderApps();},delay);
+function showStatus(msg, isError = false) {
+    const el = document.getElementById("status");
+    el.className = "card";
+    el.innerHTML = isError
+        ? `<div class="error">${escapeHtml(msg)}</div>`
+        : `<div class="small">${escapeHtml(msg)}</div>`;
+    setTimeout(() => {
+        el.className = "card hidden";
+    }, 5000);
 }
 
-async function shell(cmd){
-    const bridges=[window.ksu,window.KSU,window.kernelsu,window.KernelSU,window.webui];
-    for(const b of bridges){
-        if(b&&typeof b.exec==="function"){
-            const r=await b.exec(cmd);
-            if(typeof r==="string")return r;
-            if(r&&typeof r.stdout==="string")return r.stdout;
-            if(r&&typeof r.output==="string")return r.output;
+function setRowStatus(pkg, state, msg) {
+    rowStatus[pkg] = { state, msg };
+}
+
+function scheduleClear(pkg, delay) {
+    if (rowTimers[pkg]) clearTimeout(rowTimers[pkg]);
+    rowTimers[pkg] = setTimeout(() => {
+        delete rowStatus[pkg];
+        renderApps();
+    }, delay);
+}
+
+function toText(r) {
+    if (r == null) return "";
+    if (typeof r === "string") return r;
+    if (typeof r === "number" || typeof r === "boolean") return String(r);
+
+    if (Array.isArray(r)) return JSON.stringify(r);
+
+    if (typeof r === "object") {
+        if (typeof r.stdout === "string") return r.stdout;
+        if (typeof r.output === "string") return r.output;
+        if (typeof r.result === "string") return r.result;
+        if (typeof r.data === "string") return r.data;
+        if (typeof r.text === "string") return r.text;
+
+        if (
+            r.apps !== undefined ||
+            r.default_mode !== undefined ||
+            r.ok !== undefined ||
+            r.magisk_bin !== undefined
+        ) {
             return JSON.stringify(r);
         }
-        if(b&&typeof b.shell==="function"){
-            const r=await b.shell(cmd);
-            if(typeof r==="string")return r;
-            if(r&&typeof r.stdout==="string")return r.stdout;
-            if(r&&typeof r.output==="string")return r.output;
-            return JSON.stringify(r);
+
+        return JSON.stringify(r);
+    }
+
+    return String(r);
+}
+
+async function shell(cmd) {
+    const bridges = [
+        window.ksu,
+        window.KSU,
+        window.kernelsu,
+        window.KernelSU,
+        window.webui
+    ];
+
+    const errors = [];
+
+    for (const b of bridges) {
+        if (!b) continue;
+
+        try {
+            if (typeof b.exec === "function") {
+                const raw = await b.exec(cmd);
+                const txt = toText(raw);
+                if (txt) return txt;
+            }
+        } catch (e) {
+            errors.push("exec: " + String(e?.message || e));
+        }
+
+        try {
+            if (typeof b.shell === "function") {
+                const raw = await b.shell(cmd);
+                const txt = toText(raw);
+                if (txt) return txt;
+            }
+        } catch (e) {
+            errors.push("shell: " + String(e?.message || e));
         }
     }
-    throw new Error("KSU WebUI bridge tidak ditemukan.\nJalankan manual:\nsh "+API+" list");
+
+    throw new Error(
+        "KSU WebUI bridge tidak tersedia atau gagal menjalankan command.\n" +
+        "Coba jalankan manual di terminal root:\n\n" +
+        "sh " + API + " list\n\n" +
+        "Error bridge:\n" +
+        (errors.join("\n") || "(tidak ada error tambahan)")
+    );
 }
 
-function parseJSON(t){
-    const s=t.indexOf("{"),e=t.lastIndexOf("}");
-    if(s===-1
+function parseJSON(t) {
+    if (t && typeof t === "object") return t;
+
+    const text = String(t ?? "");
+    const s = text.indexOf("{");
+    const e = text.lastIndexOf("}");
+
+    if (s === -1 || e === -1) {
+        throw new Error("Response bukan JSON:\n" + text.slice(0, 1000));
+    }
+
+    return JSON.parse(text.slice(s, e + 1));
+}
+
+async function runApi(cmd) {
+    const out = await shell(cmd);
+
+    if (!out || !String(out).trim()) {
+        throw new Error("Respons kosong dari api.sh");
+    }
+
+    let obj;
+    try {
+        obj = parseJSON(out);
+    } catch (err) {
+        throw new Error(String(err.message || err));
+    }
+
+    if (obj && obj.ok === false) {
+        throw new Error(obj.error || "Gagal tanpa detail");
+    }
+
+    return obj || {};
+}
+
+function validPkg(p) {
+    return /^[A-Za-z0-9._]+$/.test(p);
+}
+
+function cap(s) {
+    return String(s || "").charAt(0).toUpperCase() + String(s || "").slice(1);
+}
+
+async function refresh() {
+    const list = document.getElementById("list");
+    rowStatus = {};
+
+    try {
+        list.innerText = "Loading...";
+        const out = await shell(`sh ${API} list`);
+        data = parseJSON(out);
+
+        document.getElementById("defaultMode").value = data.default_mode || "basic";
+        document.getElementById("propSpoof").value = data.prop_spoof || "0";
+
+        renderApps();
+
+        if (!data.apps || data.apps.length === 0) {
+            await loadDiag(true);
+        } else {
+            document.getElementById("diag").className = "card hidden";
+        }
+    } catch (e) {
+        list.innerHTML = `<div class="error">${escapeHtml(e.message || e)}</div>`;
+    }
+}
+
+function renderApps() {
+    const q = document.getElementById("search").value.toLowerCase();
+    const list = document.getElementById("list");
+    list.innerHTML = "";
+
+    const apps = (data.apps || []).filter(a =>
+        String(a.pkg || "").toLowerCase().includes(q)
+    );
+
+    if (!apps.length) {
+        list.innerHTML =
+            `<div class="small">Tidak ada aplikasi di DenyList yang terdeteksi.<br>` +
+            `Tambahkan aplikasi ke DenyList Magisk/NeoZygisk, lalu tekan Refresh.<br>` +
+            `Jika masih kosong, tekan <b>Debug Denylist</b>.</div>`;
+        return;
+    }
+
+    for (const app of apps) {
+        const row = document.createElement("div");
+        row.className = "app";
+
+        const left = document.createElement("div");
+        left.className = "app-left";
+
+        const pkg = document.createElement("div");
+        pkg.className = "pkg";
+        pkg.innerText = app.pkg;
+        left.appendChild(pkg);
+
+        if (app.overridden) {
+            const badges = document.createElement("div");
+            badges.className = "badges";
+
+            const b = document.createElement("span");
+            b.className = "badge override";
+            b.innerText = "OVERRIDE";
+            badges.appendChild(b);
+
+            left.appendChild(badges);
+        }
+
+        const st = rowStatus[app.pkg];
+        if (st) {
+            const s = document.createElement("div");
+            s.className = "app-status " + st.state;
+            s.innerText = st.msg;
+            left.appendChild(s);
+        }
+
+        const right = document.createElement("div");
+        right.className = "app-right";
+
+        const sel = document.createElement("select");
+        sel.className = "app-mode";
+        sel.onchange = () => setAppMode(app.pkg, sel.value);
+
+        for (const v of ["default", "basic", "aggressive", "persistent"]) {
+            const o = document.createElement("option");
+            o.value = v;
+
+            if (v === "default") {
+                o.innerText = `Default (${data.default_mode})`;
+                o.selected = !app.overridden;
+            } else {
+                o.innerText = cap(v);
+                o.selected = app.overridden && app.mode === v;
+            }
+
+            sel.appendChild(o);
+        }
+
+        right.appendChild(sel);
+
+        row.appendChild(left);
+        row.appendChild(right);
+        list.appendChild(row);
+    }
+}
+
+async function setAppMode(pkg, mode) {
+    if (!validPkg(pkg)) {
+        setRowStatus(pkg, "error", "✗ Package tidak valid");
+        scheduleClear(pkg, 6000);
+        renderApps();
+        return;
+    }
+
+    if (!["default", "basic", "aggressive", "persistent"].includes(mode)) {
+        setRowStatus(pkg, "error", "✗ Mode tidak valid");
+        scheduleClear(pkg, 6000);
+        renderApps();
+        return;
+    }
+
+    setRowStatus(pkg, "saving", "Menyimpan…");
+    renderApps();
+
+    try {
+        await runApi(`sh ${API} set ${pkg} ${mode}`);
+
+        const app = (data.apps || []).find(a => a.pkg === pkg);
+        if (app) {
+            if (mode === "default") {
+                app.overridden = false;
+                app.mode = data.default_mode;
+            } else {
+                app.overridden = true;
+                app.mode = mode;
+            }
+        }
+
+        setRowStatus(pkg, "ok", "✓ Mode diterapkan");
+        scheduleClear(pkg, 4000);
+    } catch (e) {
+        setRowStatus(pkg, "error", "✗ Gagal: " + (e.message || e));
+        scheduleClear(pkg, 9000);
+    }
+
+    renderApps();
+}
+
+async function setDefaultMode(mode) {
+    try {
+        await runApi(`sh ${API} default ${mode}`);
+        data.default_mode = mode;
+        showStatus(`Default mode → ${mode}`);
+        renderApps();
+    } catch (e) {
+        showStatus("Gagal mengubah default mode: " + (e.message || e), true);
+    }
+}
+
+async function setPropSpoof(v) {
+    try {
+        const obj = await runApi(`sh ${API} prop ${v}`);
+        data.prop_spoof = v;
+
+        if (obj.reboot_required) {
+            showStatus("Prop spoofing diubah. REBOOT diperlukan.");
+        } else {
+            showStatus("Prop spoofing diubah.");
+        }
+    } catch (e) {
+        showStatus("Gagal mengubah prop spoofing: " + (e.message || e), true);
+    }
+}
+
+async function resetAllOverrides() {
+    if (!confirm("Hapus semua override per-app?")) return;
+
+    try {
+        await runApi(`sh ${API} reset-all`);
+        (data.apps || []).forEach(a => {
+            a.overridden = false;
+            a.mode = data.default_mode;
+        });
+        rowStatus = {};
+        showStatus("Semua override dihapus.");
+        renderApps();
+    } catch (e) {
+        showStatus("Gagal reset override: " + (e.message || e), true);
+    }
+}
+
+async function loadDiag(auto = false) {
+    const el = document.getElementById("diag");
+    el.className = "card";
+    el.innerHTML = `<div class="small">Mengambil diagnosis Denylist…</div>`;
+
+    try {
+        const out = await shell(`sh ${API} diag`);
+        const d = parseJSON(out);
+        renderDiag(d, auto);
+    } catch (e) {
+        el.innerHTML =
+            `<b class="danger">Debug gagal</b>` +
+            `<div class="error">${escapeHtml(e.message || e)}</div>`;
+    }
+}
+
+function renderDiag(d, auto) {
+    const el = document.getElementById("diag");
+    el.className = "card";
+
+    const magisk = d.magisk_bin || "";
+    const raw = d.magisk_raw || "";
+    const count = Number(d.denylist_count || 0);
+    const files = d.files || {};
+    const packages = d.packages || [];
+
+    let advice = "";
+
+    if (!magisk && Object.values(files).every(v => v === false)) {
+        advice =
+            `<div class="warn">Tidak ditemukan sumber Denylist.` +
+            ` Jika Anda memakai KernelSU/APatch tanpa Magisk, tambahkan package manual ke:</div>` +
+            `<div class="mono">/data/adb/qwennhide/umount_list</div>`;
+    } else if (magisk && count === 0) {
+        advice =
+            `<div class="warn">Command magisk ditemukan, tetapi hasil parsing Denylist kosong.` +
+            ` Bisa jadi format output tidak cocok atau DenyList memang belum diisi.</div>`;
+    } else if (count > 0 && packages.length === 0) {
+        advice = `<div class="warn">Data tidak konsisten: count > 0 tetapi packages kosong.</div>`;
+    } else if (count > 0) {
+        advice = `<div class="ok">Denylist terdeteksi. Jika WebUI tetap kosong, kemungkinan cache WebUI lama. Reinstall module atau clear cache manager.</div>`;
+    }
+
+    const fileList = Object.entries(files)
+        .map(([p, ok]) => `${ok ? "✓" : "✗"} ${escapeHtml(p)}`)
+        .join("<br>") || "<span class='muted'>(tidak ada file sumber)</span>";
+
+    const pkgList = packages.length
+        ? packages.map(escapeHtml).join(", ")
+        : "(kosong)";
+
+    el.innerHTML = `
+        <b>${auto ? "Auto-debug: Denylist kosong" : "Debug Denylist"}</b>
+
+        <div class="small" style="margin-top:8px">
+            <b>magisk binary:</b>
+            <span class="${magisk ? "ok" : "danger"}">${escapeHtml(magisk || "tidak ditemukan")}</span>
+        </div>
+
+        <div class="small">
+            <b>denylist terparse:</b>
+            <span class="${count > 0 ? "ok" : "warn"}">${count}</span>
+        </div>
+
+        <div class="small" style="margin-top:8px"><b>File sumber:</b></div>
+        <div class="mono">${fileList}</div>
+
+        <div class="small" style="margin-top:8px"><b>Package hasil parsing:</b></div>
+        <div class="mono">${pkgList}</div>
+
+        ${raw ? `
+            <div class="small" style="margin-top:8px"><b>Raw output magisk --denylist ls:</b></div>
+            <div class="mono">${escapeHtml(raw)}</div>
+        ` : ""}
+
+        ${advice}
+    `;
+}
+
+refresh();
+</script>
+
+</body>
+</html>
