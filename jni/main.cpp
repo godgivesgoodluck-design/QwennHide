@@ -1,13 +1,12 @@
 // ═══════════════════════════════════════════════════════════════════════
 // QwennHide — jni/main.cpp (FINAL)
-// NeoZygisk Aligned Root Hider
+// NeoZygisk Aligned Root Hider — 3 Mode
 //
-// Arsitektur:
-//   - Companion IPC untuk cek DenyList (multi-sumber)
-//   - FORCE_DENYLIST_UNMOUNT sebagai trigger host unmount
-//   - Mode Basic:  hanya host unmount + DLCLOSE
-//   - Mode Aggressive: host unmount + FD cleanup + manual unmount
-//                      + NeoZygisk trace cleanup + DLCLOSE
+// Modes (ditentukan oleh companion):
+//   0 = Skip       → bukan target, unload segera
+//   1 = Basic      → host unmount + DLCLOSE
+//   2 = Aggressive → full cleanup + DLCLOSE
+//   3 = Persistent → full cleanup + NO DLCLOSE (module stays resident)
 //
 // Prinsip:
 //   - Tidak ada PLT hook (hindari integrity check)
@@ -16,6 +15,7 @@
 //   - DLCLOSE dipanggil maksimal 1x per app lifecycle
 //   - System server selalu unload
 //   - Tidak mengganggu daemon NeoZygisk
+//   - Mode Persistent: module tetap resident untuk handle periodic check
 // ═══════════════════════════════════════════════════════════════════════
 
 #include <cstdlib>
@@ -48,7 +48,7 @@
 // PATH DEFINITIONS
 // ═══════════════════════════════════════════════════════════════════════
 
-// Path Magisk/SU untuk FD cleanup (Aggressive)
+// Path Magisk/SU untuk FD cleanup
 static const char *FD_CHECK_PATHS[] = {
     "/sbin/.magisk",
     "/data/adb/magisk",
@@ -60,8 +60,7 @@ static const char *FD_CHECK_PATHS[] = {
     nullptr
 };
 
-// Path Magisk untuk manual unmount (Aggressive)
-// TIDAK termasuk path NeoZygisk agar tidak mengganggu host
+// Path Magisk untuk manual unmount (TIDAK termasuk NeoZygisk)
 static const char *UNMOUNT_PATHS[] = {
     "/sbin/.magisk",
     "/data/adb/magisk",
@@ -71,7 +70,7 @@ static const char *UNMOUNT_PATHS[] = {
     nullptr
 };
 
-// Path NeoZygisk untuk cleanup terpisah (Aggressive, setelah semua ops selesai)
+// Path NeoZygisk untuk cleanup terpisah (setelah semua ops module selesai)
 static const char *NEOZYGISK_CLEANUP_PATHS[] = {
     "/dev/zygisk",
     "/dev/neozygisk",
@@ -136,8 +135,7 @@ static void manualUnmount() {
         }
 
         // SAFETY: Jangan unmount path NeoZygisk/ZygiskNext di sini.
-        // NeoZygisk cleanup dilakukan terpisah di cleanNeoZygiskTraces()
-        // setelah semua operasi module selesai.
+        // NeoZygisk cleanup dilakukan terpisah di cleanNeoZygiskTraces().
         if (mountpoint.find("/dev/zygisk") == 0 ||
             mountpoint.find("/dev/neozygisk") == 0 ||
             mountpoint.find("/dev/zygisksu") == 0 ||
@@ -161,7 +159,7 @@ static void manualUnmount() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// UTILITY: Clean NeoZygisk traces (Aggressive only, after all module ops)
+// UTILITY: Clean NeoZygisk traces (setelah semua ops module selesai)
 // ═══════════════════════════════════════════════════════════════════════
 
 static void cleanNeoZygiskTraces() {
@@ -236,11 +234,9 @@ static bool isInDenyList(const std::string &pkg) {
             std::string entry(buf);
             if (!entry.empty() && entry.back() == '\n') entry.pop_back();
             size_t sep = entry.find('|');
-            std::string entry_pkg = (sep != std::string::npos) ? entry.substr(0, sep) : entry;
-            if (entry_pkg == pkg) {
-                pclose(pipe);
-                return true;
-            }
+            std::string entry_pkg = (sep != std::string::npos)
+                                    ? entry.substr(0, sep) : entry;
+            if (entry_pkg == pkg) { pclose(pipe); return true; }
         }
         pclose(pipe);
     }
@@ -295,23 +291,46 @@ static void companionHandler(int client_fd) {
         return;
     }
 
-    // Baca mode (aman di konteks root, tidak kena SELinux)
+    // ─── Baca mode global (aman di konteks root) ──────────────────────
     std::string mode = "basic";
     std::ifstream mf(MODE_FILE);
     if (mf.is_open()) std::getline(mf, mode);
-    bool is_aggressive = (mode.find("aggressive") != std::string::npos);
 
-    // Cek denylist multi-sumber
-    bool in_denylist = isInDenyList(pkgName);
-
-    // 0 = skip, 1 = basic hide, 2 = aggressive hide
-    uint8_t action = 0;
-    if (in_denylist) {
-        action = is_aggressive ? 2 : 1;
+    // ─── Cek persistent_list (per-app override) ───────────────────────
+    bool is_persistent_app = false;
+    std::ifstream persist_list(DATADIR "/persistent_list");
+    if (persist_list.is_open()) {
+        std::string line;
+        while (std::getline(persist_list, line)) {
+            if (line.empty() || line[0] == '#') continue;
+            if (line == pkgName) { is_persistent_app = true; break; }
+        }
     }
 
-    LOGI("Companion: [%s] denylist=%d mode=%s action=%d",
-         pkgName.c_str(), in_denylist, mode.c_str(), action);
+    // ─── Cek denylist multi-sumber ────────────────────────────────────
+    bool in_denylist = isInDenyList(pkgName);
+
+    // ─── Tentukan action dengan prioritas ─────────────────────────────
+    // Prioritas:
+    //   1. mode global "persistent"     → action 3
+    //   2. app di persistent_list       → action 3
+    //   3. mode global "aggressive"     → action 2
+    //   4. default                      → action 1
+    uint8_t action = 0;
+    if (in_denylist) {
+        if (mode.find("persistent") != std::string::npos) {
+            action = 3;
+        } else if (is_persistent_app) {
+            action = 3;
+        } else if (mode.find("aggressive") != std::string::npos) {
+            action = 2;
+        } else {
+            action = 1;
+        }
+    }
+
+    LOGI("Companion: [%s] denylist=%d mode=%s persist_app=%d action=%d",
+         pkgName.c_str(), in_denylist, mode.c_str(), is_persistent_app, action);
 
     write(client_fd, &action, 1);
 }
@@ -325,7 +344,7 @@ public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
         this->api = api;
         this->env = env;
-        LOGI("QwennHide loaded (NeoZygisk aligned)");
+        LOGI("QwennHide loaded (NeoZygisk aligned, 3-mode)");
     }
 
     void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
@@ -376,7 +395,7 @@ public:
 
             // Trigger host unmount (Magisk atau NeoZygisk).
             // Best-effort: jika NeoZygisk tidak support, ini jadi no-op.
-            // Fallback kita ada di manualUnmount() untuk mode Aggressive.
+            // Fallback ada di manualUnmount() untuk mode Aggressive/Persistent.
             api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
         } else {
             // Bukan target → unload segera, jangan tinggalkan jejak
@@ -389,19 +408,31 @@ public:
         // Guard: jika sudah unload di preAppSpecialize, skip
         if (unloaded || hide_action == 0) return;
 
-        if (hide_action == 2) {
-            // ─── AGGRESSIVE MODE ────────────────────────────────────────
+        if (hide_action >= 2) {
+            // ─── AGGRESSIVE atau PERSISTENT: full cleanup ─────────────
             // Urutan penting:
             // 1. FD cleanup Magisk/SU
             // 2. Manual unmount Magisk (skip NeoZygisk)
             // 3. NeoZygisk trace cleanup (setelah semua ops selesai)
-            LOGD("Aggressive: full cleanup sequence");
+            LOGD("Full cleanup sequence (action=%d)", hide_action);
             closeLeakedFds();
             manualUnmount();
             cleanNeoZygiskTraces();
         }
 
-        // Unload module → hilang dari /proc/self/maps
+        if (hide_action == 3) {
+            // ─── PERSISTENT MODE ──────────────────────────────────────
+            // JANGAN DLCLOSE. Module tetap resident di memory.
+            // Ini memungkinkan module tetap aktif saat app melakukan
+            // periodic root check di background.
+            //
+            // Trade-off: module terlihat di /proc/self/maps.
+            // Tapi ini diperlukan untuk app yang sangat agresif.
+            LOGI("Persistent mode: module stays resident (pid=%d)", getpid());
+            return;
+        }
+
+        // ─── BASIC atau AGGRESSIVE: unload ────────────────────────────
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
         unloaded = true;
     }
@@ -419,8 +450,8 @@ public:
 private:
     zygisk::Api *api = nullptr;
     JNIEnv *env = nullptr;
-    uint8_t hide_action = 0;   // 0=skip, 1=basic, 2=aggressive
-    bool unloaded = false;     // Guard agar DLCLOSE hanya 1x
+    uint8_t hide_action = 0;   // 0=skip, 1=basic, 2=aggressive, 3=persistent
+    bool unloaded = false;     // Guard agar DLCLOSE hanya 1x per app lifecycle
 };
 
 REGISTER_ZYGISK_MODULE(QwennHide)
