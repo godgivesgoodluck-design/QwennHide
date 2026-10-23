@@ -1,5 +1,22 @@
-// QwennHide - main.cpp (NeoZygisk Aligned)
-// Prinsip: NeoZygisk handle core mechanism, kita hanya tambah lapisan ekstra.
+// ═══════════════════════════════════════════════════════════════════════
+// QwennHide — jni/main.cpp (FINAL)
+// NeoZygisk Aligned Root Hider
+//
+// Arsitektur:
+//   - Companion IPC untuk cek DenyList (multi-sumber)
+//   - FORCE_DENYLIST_UNMOUNT sebagai trigger host unmount
+//   - Mode Basic:  hanya host unmount + DLCLOSE
+//   - Mode Aggressive: host unmount + FD cleanup + manual unmount
+//                      + NeoZygisk trace cleanup + DLCLOSE
+//
+// Prinsip:
+//   - Tidak ada PLT hook (hindari integrity check)
+//   - Tidak ada property spoofing di C++ (ada di service.sh)
+//   - Tidak baca file mode di app context (hanya di companion/root)
+//   - DLCLOSE dipanggil maksimal 1x per app lifecycle
+//   - System server selalu unload
+//   - Tidak mengganggu daemon NeoZygisk
+// ═══════════════════════════════════════════════════════════════════════
 
 #include <cstdlib>
 #include <cstring>
@@ -27,22 +44,11 @@
 #define DATADIR   "/data/adb/qwennhide"
 #define MODE_FILE DATADIR "/mode"
 
-// ─── Paths yang BERSIH untuk di-unmount ─────────────────────────────────
-// HANYA path Magisk yang jelas. TIDAK termasuk path NeoZygisk.
-static const char *UNMOUNT_PATHS[] = {
-    "/sbin/.magisk",
-    "/data/adb/magisk",
-    "/data/adb/modules",
-    "/dev/.magisk",
-    "/dev/.magisk.unblock",
-    // ⚠️ JANGAN tambah:
-    //   "/dev/zygisk"     → dipakai NeoZygisk
-    //   "/dev/neozygisk"  → dipakai NeoZygisk
-    //   "/data/adb/modules/neozygisk" → module dir NeoZygisk
-    nullptr
-};
+// ═══════════════════════════════════════════════════════════════════════
+// PATH DEFINITIONS
+// ═══════════════════════════════════════════════════════════════════════
 
-// ─── FD paths untuk cleanup (Aggressive mode) ──────────────────────────
+// Path Magisk/SU untuk FD cleanup (Aggressive)
 static const char *FD_CHECK_PATHS[] = {
     "/sbin/.magisk",
     "/data/adb/magisk",
@@ -50,10 +56,33 @@ static const char *FD_CHECK_PATHS[] = {
     "/system/bin/su",
     "/system/xbin/su",
     "/sbin/su",
+    "/system/bin/.ext/.su",
     nullptr
 };
 
-// ─── Utility: Close FD yang bocor ──────────────────────────────────────
+// Path Magisk untuk manual unmount (Aggressive)
+// TIDAK termasuk path NeoZygisk agar tidak mengganggu host
+static const char *UNMOUNT_PATHS[] = {
+    "/sbin/.magisk",
+    "/data/adb/magisk",
+    "/data/adb/modules",
+    "/dev/.magisk",
+    "/dev/.magisk.unblock",
+    nullptr
+};
+
+// Path NeoZygisk untuk cleanup terpisah (Aggressive, setelah semua ops selesai)
+static const char *NEOZYGISK_CLEANUP_PATHS[] = {
+    "/dev/zygisk",
+    "/dev/neozygisk",
+    "/dev/zygisksu",
+    nullptr
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// UTILITY: Close leaked file descriptors (Magisk/SU)
+// ═══════════════════════════════════════════════════════════════════════
+
 static void closeLeakedFds() {
     DIR *fd_dir = opendir("/proc/self/fd");
     if (!fd_dir) return;
@@ -62,7 +91,7 @@ static void closeLeakedFds() {
     while ((entry = readdir(fd_dir)) != nullptr) {
         if (entry->d_name[0] == '.') continue;
         int fd = atoi(entry->d_name);
-        if (fd <= 2) continue; // stdin/stdout/stderr
+        if (fd <= 2) continue; // stdin, stdout, stderr
 
         char link_path[64], target[512];
         snprintf(link_path, sizeof(link_path), "/proc/self/fd/%s", entry->d_name);
@@ -81,7 +110,10 @@ static void closeLeakedFds() {
     closedir(fd_dir);
 }
 
-// ─── Utility: Unmount manual (fallback jika FORCE_DENYLIST tidak cukup) ─
+// ═══════════════════════════════════════════════════════════════════════
+// UTILITY: Manual unmount Magisk paths (SKIP NeoZygisk paths)
+// ═══════════════════════════════════════════════════════════════════════
+
 static void manualUnmount() {
     std::ifstream mi("/proc/self/mountinfo");
     if (!mi.is_open()) return;
@@ -103,7 +135,9 @@ static void manualUnmount() {
             }
         }
 
-        // SAFETY: Jangan unmount path NeoZygisk/ZygiskNext
+        // SAFETY: Jangan unmount path NeoZygisk/ZygiskNext di sini.
+        // NeoZygisk cleanup dilakukan terpisah di cleanNeoZygiskTraces()
+        // setelah semua operasi module selesai.
         if (mountpoint.find("/dev/zygisk") == 0 ||
             mountpoint.find("/dev/neozygisk") == 0 ||
             mountpoint.find("/dev/zygisksu") == 0 ||
@@ -118,7 +152,7 @@ static void manualUnmount() {
     }
     mi.close();
 
-    // Unmount dari child ke parent
+    // Unmount dari child ke parent (reverse order)
     for (auto it = to_unmount.rbegin(); it != to_unmount.rend(); ++it) {
         if (umount2(it->second.c_str(), MNT_DETACH) == 0) {
             LOGD("Manual unmount: %s", it->second.c_str());
@@ -126,9 +160,75 @@ static void manualUnmount() {
     }
 }
 
-// ─── Helper: Cek DenyList (multi-sumber, NeoZygisk-aware) ──────────────
+// ═══════════════════════════════════════════════════════════════════════
+// UTILITY: Clean NeoZygisk traces (Aggressive only, after all module ops)
+// ═══════════════════════════════════════════════════════════════════════
+
+static void cleanNeoZygiskTraces() {
+    LOGD("Cleaning NeoZygisk traces from app namespace");
+
+    // 1. Close FD yang mengarah ke path NeoZygisk
+    DIR *fd_dir = opendir("/proc/self/fd");
+    if (fd_dir) {
+        struct dirent *entry;
+        while ((entry = readdir(fd_dir)) != nullptr) {
+            if (entry->d_name[0] == '.') continue;
+            int fd = atoi(entry->d_name);
+            if (fd <= 2) continue;
+
+            char link_path[64], target[512];
+            snprintf(link_path, sizeof(link_path), "/proc/self/fd/%s", entry->d_name);
+            ssize_t len = readlink(link_path, target, sizeof(target) - 1);
+            if (len <= 0) continue;
+            target[len] = '\0';
+
+            for (int i = 0; NEOZYGISK_CLEANUP_PATHS[i]; i++) {
+                if (strncmp(target, NEOZYGISK_CLEANUP_PATHS[i],
+                            strlen(NEOZYGISK_CLEANUP_PATHS[i])) == 0) {
+                    close(fd);
+                    LOGD("Closed NeoZygisk fd %d -> %s", fd, target);
+                    break;
+                }
+            }
+        }
+        closedir(fd_dir);
+    }
+
+    // 2. Unmount path NeoZygisk yang tersisa di app namespace
+    std::ifstream mi("/proc/self/mountinfo");
+    if (!mi.is_open()) return;
+
+    std::vector<std::pair<int, std::string>> to_unmount;
+    std::string line;
+
+    while (std::getline(mi, line)) {
+        std::istringstream ss(line);
+        int mount_id, parent_id;
+        std::string major_minor, root, mountpoint;
+        ss >> mount_id >> parent_id >> major_minor >> root >> mountpoint;
+
+        for (int i = 0; NEOZYGISK_CLEANUP_PATHS[i]; i++) {
+            if (mountpoint.find(NEOZYGISK_CLEANUP_PATHS[i]) == 0) {
+                to_unmount.push_back({mount_id, mountpoint});
+                break;
+            }
+        }
+    }
+    mi.close();
+
+    for (auto it = to_unmount.rbegin(); it != to_unmount.rend(); ++it) {
+        if (umount2(it->second.c_str(), MNT_DETACH) == 0) {
+            LOGD("Unmounted NeoZygisk: %s", it->second.c_str());
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// DENYLIST CHECK (Multi-source: Magisk + NeoZygisk + Custom)
+// ═══════════════════════════════════════════════════════════════════════
+
 static bool isInDenyList(const std::string &pkg) {
-    // Sumber 1: Magisk CLI (jika Magisk Alpha terinstall bareng NeoZygisk)
+    // Sumber 1: Magisk CLI (jika Magisk Alpha terinstall)
     FILE *pipe = popen("magisk --denylist ls 2>/dev/null", "r");
     if (pipe) {
         char buf[256];
@@ -137,12 +237,15 @@ static bool isInDenyList(const std::string &pkg) {
             if (!entry.empty() && entry.back() == '\n') entry.pop_back();
             size_t sep = entry.find('|');
             std::string entry_pkg = (sep != std::string::npos) ? entry.substr(0, sep) : entry;
-            if (entry_pkg == pkg) { pclose(pipe); return true; }
+            if (entry_pkg == pkg) {
+                pclose(pipe);
+                return true;
+            }
         }
         pclose(pipe);
     }
 
-    // Sumber 2: File denylist NeoZygisk (jika ada)
+    // Sumber 2: File denylist NeoZygisk / ZygiskNext
     const char *neo_paths[] = {
         "/data/adb/modules/neozygisk/denylist",
         "/data/adb/modules/zygisksu/denylist",
@@ -160,7 +263,7 @@ static bool isInDenyList(const std::string &pkg) {
         }
     }
 
-    // Sumber 3: Custom list milik QwennHide
+    // Sumber 3: Custom umount_list milik QwennHide
     std::ifstream custom(DATADIR "/umount_list");
     if (custom.is_open()) {
         std::string line;
@@ -173,7 +276,10 @@ static bool isInDenyList(const std::string &pkg) {
     return false;
 }
 
-// ─── Companion Handler (jalan di konteks root via NeoZygisk) ───────────
+// ═══════════════════════════════════════════════════════════════════════
+// COMPANION HANDLER (jalan di konteks root, dikelola NeoZygisk)
+// ═══════════════════════════════════════════════════════════════════════
+
 static void companionHandler(int client_fd) {
     uint32_t len = 0;
     if (read(client_fd, &len, sizeof(len)) != sizeof(len) || len == 0 || len > 512) {
@@ -183,14 +289,19 @@ static void companionHandler(int client_fd) {
     }
 
     std::string pkgName(len, '\0');
-    read(client_fd, &pkgName[0], len);
+    if (read(client_fd, &pkgName[0], len) != (ssize_t)len) {
+        uint8_t resp = 0;
+        write(client_fd, &resp, 1);
+        return;
+    }
 
-    // Baca mode (aman di konteks root)
+    // Baca mode (aman di konteks root, tidak kena SELinux)
     std::string mode = "basic";
     std::ifstream mf(MODE_FILE);
     if (mf.is_open()) std::getline(mf, mode);
     bool is_aggressive = (mode.find("aggressive") != std::string::npos);
 
+    // Cek denylist multi-sumber
     bool in_denylist = isInDenyList(pkgName);
 
     // 0 = skip, 1 = basic hide, 2 = aggressive hide
@@ -205,7 +316,10 @@ static void companionHandler(int client_fd) {
     write(client_fd, &action, 1);
 }
 
-// ─── Main Module ────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════
+// MAIN MODULE CLASS
+// ═══════════════════════════════════════════════════════════════════════
+
 class QwennHide : public zygisk::ModuleBase {
 public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
@@ -218,7 +332,7 @@ public:
         hide_action = 0;
         unloaded = false;
 
-        if (!args->nice_name) {
+        if (!args || !args->nice_name) {
             api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
             unloaded = true;
             return;
@@ -233,10 +347,12 @@ public:
 
         std::string pkg(raw);
         env->ReleaseStringUTFChars(args->nice_name, raw);
+
+        // Strip ":process" suffix
         size_t colon = pkg.find(':');
         if (colon != std::string::npos) pkg = pkg.substr(0, colon);
 
-        // Tanya companion (NeoZygisk yang manage lifecycle-nya)
+        // Tanya companion (NeoZygisk yang manage lifecycle companion)
         int fd = api->connectCompanion();
         if (fd < 0) {
             LOGW("Companion connect failed, unloading");
@@ -257,10 +373,10 @@ public:
 
         if (hide_action > 0) {
             LOGI("Hiding [%s] action=%d", pkg.c_str(), hide_action);
-            // Trigger NeoZygisk/Magisk untuk unmount overlay.
-            // Ini adalah mekanisme RESMI, bukan hack.
-            // Di NeoZygisk: mungkin no-op, tapi aman dipanggil.
-            // Di Magisk Alpha: melakukan unmount sebenarnya.
+
+            // Trigger host unmount (Magisk atau NeoZygisk).
+            // Best-effort: jika NeoZygisk tidak support, ini jadi no-op.
+            // Fallback kita ada di manualUnmount() untuk mode Aggressive.
             api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
         } else {
             // Bukan target → unload segera, jangan tinggalkan jejak
@@ -270,32 +386,41 @@ public:
     }
 
     void postAppSpecialize([[maybe_unused]] const zygisk::AppSpecializeArgs *args) override {
-        // Jika sudah unload di preAppSpecialize, tidak perlu lakukan apa-apa
+        // Guard: jika sudah unload di preAppSpecialize, skip
         if (unloaded || hide_action == 0) return;
 
         if (hide_action == 2) {
-            // Aggressive: tambahan cleanup yang NeoZygisk tidak lakukan
-            LOGD("Aggressive: extra FD + mount cleanup");
+            // ─── AGGRESSIVE MODE ────────────────────────────────────────
+            // Urutan penting:
+            // 1. FD cleanup Magisk/SU
+            // 2. Manual unmount Magisk (skip NeoZygisk)
+            // 3. NeoZygisk trace cleanup (setelah semua ops selesai)
+            LOGD("Aggressive: full cleanup sequence");
             closeLeakedFds();
             manualUnmount();
+            cleanNeoZygiskTraces();
         }
 
-        // Unload module → tidak ada jejak di /proc/self/maps
+        // Unload module → hilang dari /proc/self/maps
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
         unloaded = true;
     }
 
     void preServerSpecialize([[maybe_unused]] zygisk::ServerSpecializeArgs *args) override {
-        // System server: selalu unload, jangan ganggu
+        // System server: SELALU unload, jangan pernah ganggu
         api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
         unloaded = true;
+    }
+
+    void postServerSpecialize([[maybe_unused]] const zygisk::ServerSpecializeArgs *args) override {
+        // Tidak ada yang perlu dilakukan
     }
 
 private:
     zygisk::Api *api = nullptr;
     JNIEnv *env = nullptr;
-    uint8_t hide_action = 0;
-    bool unloaded = false;
+    uint8_t hide_action = 0;   // 0=skip, 1=basic, 2=aggressive
+    bool unloaded = false;     // Guard agar DLCLOSE hanya 1x
 };
 
 REGISTER_ZYGISK_MODULE(QwennHide)
