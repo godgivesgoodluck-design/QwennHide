@@ -1,149 +1,121 @@
 #!/system/bin/sh
 # ═══════════════════════════════════════════════════════════════════════
-# QwennHide — action.sh (3 Mode)
+# QwennHide — action.sh
+# Fallback + status cepat. Pengaturan per-app dilakukan via WebUI.
 #
-#   VOL DOWN  → Pindah pilihan ke bawah (wrap-around)
-#   VOL UP    → Konfirmasi / OK
-#
-# Modes:
-#   1. Basic      → Host unmount + DLCLOSE
-#   2. Aggressive → Full cleanup + DLCLOSE
-#   3. Persistent → Full cleanup + NO DLCLOSE (module stays resident)
+#   VOL DOWN → pindah pilihan
+#   VOL UP   → eksekusi pilihan
 # ═══════════════════════════════════════════════════════════════════════
 
+MODDIR="${0%/*}"
+API="$MODDIR/api.sh"
 DATADIR="/data/adb/qwennhide"
-MODE_FILE="$DATADIR/mode"
-mkdir -p "$DATADIR"
 
-# ─── Helper ─────────────────────────────────────────────────────────────
-
-get_mode() {
-    if [ -f "$MODE_FILE" ]; then
-        cat "$MODE_FILE" | tr -d '\r\n '
-    else
-        echo "basic"
-    fi
-}
-
-set_mode() {
-    echo "$1" > "$MODE_FILE"
-    chmod 644 "$MODE_FILE"
-}
-
-draw_menu() {
-    local sel=$1
-    local cur=$2
-    local rem=$3
-
-    clear
-    echo ""
-    echo "  ╔══════════════════════════════════╗"
-    echo "  ║    QwennHide Mode Switcher       ║"
-    echo "  ╚══════════════════════════════════╝"
-    echo ""
-    echo "  Current : $cur"
-    echo ""
-    echo "  Select:"
-    echo ""
-
-    # Option 0: Basic
-    if [ $sel -eq 0 ]; then
-        echo "    ▶ Basic"
-    else
-        echo "      Basic"
-    fi
-
-    # Option 1: Aggressive
-    if [ $sel -eq 1 ]; then
-        echo "    ▶ Aggressive"
-    else
-        echo "      Aggressive"
-    fi
-
-    # Option 2: Persistent
-    if [ $sel -eq 2 ]; then
-        echo "    ▶ Persistent"
-    else
-        echo "      Persistent"
-    fi
-
-    echo ""
-    echo "  ─────────────────────────────────"
-    echo "  VOL DOWN  → Move selection"
-    echo "  VOL UP    → Confirm (OK)"
-    echo "  ─────────────────────────────────"
-    echo ""
-    printf "  Timeout: %ds" "$rem"
-}
-
-# ─── Non-interactive mode ──────────────────────────────────────────────
-
+# ─── Non-interactive ───────────────────────────────────────────────────
 if [ -n "$1" ]; then
     case "$1" in
-        basic|aggressive|persistent)
-            set_mode "$1"
-            echo "Mode switched to: $1"
-            echo ""
-            echo "Per-process cleanup : immediate"
-            echo "Property spoofing   : reboot required"
-            exit 0
-            ;;
         status)
-            echo "Current mode: $(get_mode)"
+            sh "$API" list 2>/dev/null | head -c 400
+            echo ""
             exit 0
             ;;
+        basic|aggressive|persistent)
+            sh "$API" default "$1"
+            exit 0
+            ;;
+        prop0) sh "$API" prop 0; exit 0 ;;
+        prop1) sh "$API" prop 1; exit 0 ;;
         *)
-            echo "Usage: $0 [basic|aggressive|persistent|status]"
+            echo "Usage: $0 [status|basic|aggressive|persistent|prop0|prop1]"
             exit 1
             ;;
     esac
 fi
 
-# ─── Cek getevent ──────────────────────────────────────────────────────
+# ─── Baca status saat ini ──────────────────────────────────────────────
+get_default() {
+    cat "$DATADIR/mode" 2>/dev/null | tr -d '\r\n ' || echo "basic"
+}
+get_prop() {
+    cat "$DATADIR/prop_spoof" 2>/dev/null | tr -d '\r\n ' || echo "0"
+}
+count_overrides() {
+    [ -f "$DATADIR/apps.list" ] && grep -c '|' "$DATADIR/apps.list" 2>/dev/null || echo 0
+}
 
+# ─── Cek getevent ──────────────────────────────────────────────────────
 if ! command -v getevent >/dev/null 2>&1; then
-    echo ""
-    echo "ERROR: getevent not found."
-    echo "Use terminal instead:"
-    echo "  $0 basic"
-    echo "  $0 aggressive"
-    echo "  $0 persistent"
+    echo "getevent tidak tersedia."
+    echo "Gunakan terminal:"
     echo "  $0 status"
+    echo "  $0 basic|aggressive|persistent"
+    echo "  $0 prop0|prop1"
     exit 1
 fi
 
-# ─── Menu navigation ───────────────────────────────────────────────────
-
-current=$(get_mode)
+# ─── Menu ──────────────────────────────────────────────────────────────
 selection=0
-total=3
+total=6
 timeout=60
 start_time=$(date +%s)
 
-# Set posisi awal sesuai mode aktif
-case "$current" in
-    aggressive) selection=1 ;;
-    persistent) selection=2 ;;
-    *)          selection=0 ;;
-esac
+draw_menu() {
+    local sel=$1
+    local def prop ov
+    def=$(get_default)
+    prop=$(get_prop)
+    ov=$(count_overrides)
+
+    local prop_state="OFF"
+    [ "$prop" = "1" ] && prop_state="ON"
+
+    clear
+    echo ""
+    echo "  ╔════════════════════════════════╗"
+    echo "  ║   QwennHide — Action (Fallback)║"
+    echo "  ╚════════════════════════════════╝"
+    echo ""
+    echo "  Default mode   : $def"
+    echo "  Prop spoofing  : $prop_state"
+    echo "  Per-app override: $ov app (via WebUI)"
+    echo ""
+    echo "  Pilih aksi:"
+    echo ""
+
+    local i=0
+    for label in \
+        "Set default → Basic" \
+        "Set default → Aggressive" \
+        "Set default → Persistent" \
+        "Toggle Prop Spoofing" \
+        "Refresh status" \
+        "Keluar"
+    do
+        if [ $sel -eq $i ]; then
+            echo "    ▶ $label"
+        else
+            echo "      $label"
+        fi
+        i=$((i + 1))
+    done
+
+    echo ""
+    echo "  ───────────────────────────────"
+    echo "  VOL DOWN → pindah"
+    echo "  VOL UP   → eksekusi"
+    echo "  ───────────────────────────────"
+}
 
 while true; do
     now=$(date +%s)
     elapsed=$((now - start_time))
     remaining=$((timeout - elapsed))
+    [ $remaining -le 0 ] && { clear; echo "Timeout."; exit 0; }
 
-    if [ $remaining -le 0 ]; then
-        clear
-        echo ""
-        echo "  Timeout. Mode remains: $current"
-        exit 0
-    fi
-
-    draw_menu $selection "$current" $remaining
+    draw_menu $selection
 
     event=$(timeout 1 getevent -l 2>/dev/null \
-        | grep -E "KEY_VOLUME(UP|DOWN).*DOWN" \
-        | head -1)
+        | grep -E "KEY_VOLUME(UP|DOWN).*DOWN" | head -1)
 
     if echo "$event" | grep -q "KEY_VOLUMEDOWN"; then
         selection=$(( (selection + 1) % total ))
@@ -152,42 +124,46 @@ while true; do
     elif echo "$event" | grep -q "KEY_VOLUMEUP"; then
         clear
         echo ""
-
-        if [ $selection -eq 0 ]; then
-            set_mode "basic"
-            echo "  ╔══════════════════════════════════╗"
-            echo "  ║  ✓ Mode: BASIC                   ║"
-            echo "  ╚══════════════════════════════════╝"
-            echo ""
-            echo "  Host unmount only."
-            echo "  Module unloads after hide."
-            echo "  Lightest footprint."
-
-        elif [ $selection -eq 1 ]; then
-            set_mode "aggressive"
-            echo "  ╔══════════════════════════════════╗"
-            echo "  ║  ✓ Mode: AGGRESSIVE              ║"
-            echo "  ╚══════════════════════════════════╝"
-            echo ""
-            echo "  Host + manual + NeoZygisk cleanup."
-            echo "  Module unloads after hide."
-
-        elif [ $selection -eq 2 ]; then
-            set_mode "persistent"
-            echo "  ╔══════════════════════════════════╗"
-            echo "  ║  ✓ Mode: PERSISTENT              ║"
-            echo "  ╚══════════════════════════════════╝"
-            echo ""
-            echo "  Full cleanup + module stays resident."
-            echo "  Handles periodic root checks."
-            echo "  ⚠ Module visible in /proc/self/maps"
-        fi
-
+        case $selection in
+            0)
+                sh "$API" default basic >/dev/null
+                echo "  ✓ Default mode → Basic"
+                ;;
+            1)
+                sh "$API" default aggressive >/dev/null
+                echo "  ✓ Default mode → Aggressive"
+                ;;
+            2)
+                sh "$API" default persistent >/dev/null
+                echo "  ✓ Default mode → Persistent"
+                ;;
+            3)
+                cur=$(get_prop)
+                if [ "$cur" = "1" ]; then
+                    sh "$API" prop 0 >/dev/null
+                    echo "  ✓ Prop spoofing → OFF"
+                else
+                    sh "$API" prop 1 >/dev/null
+                    echo "  ✓ Prop spoofing → ON (reboot dibutuhkan)"
+                fi
+                ;;
+            4)
+                echo "  Status:"
+                echo "    Default mode  : $(get_default)"
+                echo "    Prop spoofing : $(get_prop)"
+                echo "    Overrides     : $(count_overrides) app"
+                sleep 2
+                start_time=$(date +%s)
+                continue
+                ;;
+            5)
+                echo "  Keluar."
+                exit 0
+                ;;
+        esac
         echo ""
-        echo "  Per-process : immediate"
-        echo "  Properties  : reboot required"
-        echo ""
-        sleep 3
+        echo "  Perubahan mode per-app → via WebUI."
+        sleep 2
         exit 0
     fi
 done
