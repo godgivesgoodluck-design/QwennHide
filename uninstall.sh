@@ -1,22 +1,8 @@
 #!/system/bin/sh
 
-# Cleanup optional runtime data
-for d in /data/adb/qwennhide /data/local/tmp/qwennhide; do
-    [ -e "$d" ] && rm -rf "$d"
-done
+# QwennHide - uninstall.sh
+# Clean removal: only remove module data, no global unmounts
 
-# Defensive unmount
-for p in \
-    /system/bin/su /system/xbin/su /sbin/su \
-    /system/bin/.magisk /system/bin/magisk \
-    /system/bin/magiskinit /system/bin/magiskpolicy \
-    /data/adb/magisk /data/adb/modules \
-    /data/adb/service.d /data/adb/post-fs-data.d \
-    /debug_ramdisk /dev/.magisk /dev/.magisk.unblock /dev/zygisk \
-; do
-    if grep -q " ${p} " /proc/self/mountinfo 2>/dev/null; then
-        umount -l "$p" 2>/dev/null
-    fi
-done
+rm -rf /data/adb/qwennhide
 
 exit 0
