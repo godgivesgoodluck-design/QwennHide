@@ -16,6 +16,7 @@ BASE="/data/adb/qwennhide"
 MODE_FILE="$BASE/mode"
 PROP_FILE="$BASE/prop_spoof"
 APPS_FILE="$BASE/apps.list"
+RUNTIME_DIR="$BASE/runtime"
 DENY_TMP="$BASE/.deny.tmp"
 
 DENY_FILES="
@@ -30,10 +31,14 @@ DENY_FILES="
 
 ensure() {
     mkdir -p "$BASE"
+    mkdir -p "$RUNTIME_DIR"
     chmod 700 "$BASE"
+    chmod 700 "$RUNTIME_DIR"
+
     [ -f "$MODE_FILE" ] || echo "basic" > "$MODE_FILE"
     [ -f "$PROP_FILE" ] || echo "0" > "$PROP_FILE"
     [ -f "$APPS_FILE" ] || : > "$APPS_FILE"
+
     chmod 600 "$MODE_FILE" "$PROP_FILE" "$APPS_FILE" 2>/dev/null
 }
 
@@ -71,6 +76,10 @@ get_app_override() {
         "$APPS_FILE" 2>/dev/null
 }
 
+sanitize_file_name() {
+    printf '%s' "$1" | sed -e 's/[^A-Za-z0-9._]/_/g'
+}
+
 find_magisk() {
     if command -v magisk >/dev/null 2>&1; then
         printf 'magisk'
@@ -93,12 +102,6 @@ find_magisk() {
     printf ''
 }
 
-# Normalize berbagai format denylist menjadi package name saja.
-# Contoh input yang didukung:
-#   com.example
-#   com.example|com.example:push
-#   10123|com.example|com.example:push
-#   com.example:push
 normalize_pkgs() {
     awk -F'|' '
     {
@@ -136,15 +139,40 @@ get_denylist_packages() {
     } | sort -u
 }
 
-array_from_file() {
-    file="$1"
-    first=1
-    while IFS= read -r item; do
-        [ -z "$item" ] && continue
-        [ $first -eq 0 ] && printf ','
-        printf '"%s"' "$(json_escape "$item")"
-        first=0
-    done < "$file"
+is_pid_for_pkg() {
+    local pid="$1"
+    local pkg="$2"
+
+    [ -n "$pid" ] || return 1
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$pid" -gt 0 ] || return 1
+    [ -d "/proc/$pid" ] || return 1
+
+    local first=""
+    local base=""
+
+    if [ -r "/proc/$pid/cmdline" ]; then
+        first=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | head -n 1)
+        base=${first%%:*}
+        [ "$base" = "$pkg" ] && return 0
+    fi
+
+    if [ -r "/proc/$pid/comm" ]; then
+        first=$(head -n 1 "/proc/$pid/comm" 2>/dev/null)
+        base=${first%%:*}
+        [ "$base" = "$pkg" ] && return 0
+    fi
+
+    return 1
+}
+
+action_to_mode() {
+    case "$1" in
+        1) printf 'basic' ;;
+        2) printf 'aggressive' ;;
+        3) printf 'persistent' ;;
+        *) printf '' ;;
+    esac
 }
 
 # ─── Commands ──────────────────────────────────────────────────────────
@@ -175,11 +203,50 @@ cmd_list() {
             overridden=false
         fi
 
+        rt_file="$RUNTIME_DIR/$(sanitize_file_name "$pkg")"
+        rt_running=false
+        rt_mode=""
+        rt_pid=0
+        rt_age=0
+
+        if [ -r "$rt_file" ]; then
+            IFS='|' read -r rpid raction rts < "$rt_file" 2>/dev/null
+
+            rpid=${rpid:-0}
+            raction=${raction:-0}
+            rts=${rts:-0}
+
+            case "$rpid" in ''|*[!0-9]*) rpid=0 ;; esac
+            case "$raction" in ''|*[!0-9]*) raction=0 ;; esac
+            case "$rts" in ''|*[!0-9]*) rts=0 ;; esac
+
+            now=$(date +%s)
+            if [ "$rts" -gt 0 ]; then
+                rt_age=$((now - rts))
+                [ "$rt_age" -lt 0 ] && rt_age=0
+            fi
+
+            rt_mode=$(action_to_mode "$raction")
+
+            if is_pid_for_pkg "$rpid" "$pkg"; then
+                rt_running=true
+                rt_pid=$rpid
+            else
+                rt_running=false
+                rt_pid=0
+            fi
+        fi
+
         [ $first -eq 0 ] && printf ','
-        printf '\n{"pkg":"%s","mode":"%s","overridden":%s}' \
+        printf '\n{"pkg":"%s","mode":"%s","overridden":%s,"runtime_running":%s,"runtime_mode":"%s","runtime_pid":%s,"runtime_age":%s}' \
             "$(json_escape "$pkg")" \
             "$(json_escape "$mode")" \
-            "$overridden"
+            "$overridden" \
+            "$rt_running" \
+            "$(json_escape "$rt_mode")" \
+            "$rt_pid" \
+            "$rt_age"
+
         first=0
     done < "$DENY_TMP"
 
@@ -199,10 +266,16 @@ cmd_diag() {
     get_denylist_packages > "$DENY_TMP"
     count=$(grep -c . "$DENY_TMP" 2>/dev/null || echo 0)
 
-    printf '{"magisk_bin":"%s","magisk_raw":"%s","denylist_count":%s,"files":{' \
+    rt_count=0
+    if [ -d "$RUNTIME_DIR" ]; then
+        rt_count=$(find "$RUNTIME_DIR" -maxdepth 1 -type f 2>/dev/null | wc -l)
+    fi
+
+    printf '{"magisk_bin":"%s","magisk_raw":"%s","denylist_count":%s,"runtime_count":%s,"files":{' \
         "$(json_escape "$m")" \
         "$(json_escape "$raw")" \
-        "$count"
+        "$count" \
+        "$rt_count"
 
     first=1
     for f in $DENY_FILES "$BASE/umount_list"; do
@@ -217,15 +290,23 @@ cmd_diag() {
     done
 
     printf '},"packages":['
-    array_from_file "$DENY_TMP"
+
+    first=1
+    while IFS= read -r pkg; do
+        [ -z "$pkg" ] && continue
+        [ $first -eq 0 ] && printf ','
+        printf '"%s"' "$(json_escape "$pkg")"
+        first=0
+    done < "$DENY_TMP"
+
     printf ']}\n'
 
     rm -f "$DENY_TMP"
 }
 
 cmd_set() {
-    pkg="$1"
-    mode="$2"
+    local pkg="$1"
+    local mode="$2"
     ensure
 
     valid_pkg "$pkg" || {
@@ -238,7 +319,7 @@ cmd_set() {
         exit 1
     }
 
-    tmp="$APPS_FILE.tmp"
+    local tmp="$APPS_FILE.tmp"
     awk -F'|' -v p="$pkg" '$1 != p' "$APPS_FILE" > "$tmp" 2>/dev/null || : > "$tmp"
 
     if [ "$mode" != "default" ]; then
@@ -252,7 +333,7 @@ cmd_set() {
 }
 
 cmd_default() {
-    mode="$1"
+    local mode="$1"
     ensure
 
     case "$mode" in
@@ -270,7 +351,7 @@ cmd_default() {
 }
 
 cmd_prop() {
-    val="$1"
+    local val="$1"
     ensure
 
     case "$val" in
