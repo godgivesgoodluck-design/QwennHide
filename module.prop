@@ -1,6 +1,6 @@
 id=qwennhide
 name=QwennHide
-version=v1.7.0
-versionCode=7
+version=v3.1.0
+versionCode=8
 author=Qwenn
-description=Per-process root hiding with runtime mode switcher. Action button to toggle Basic/Aggressive mode.
+description=DenyList root hider with WebUI, runtime mode display, 3 modes, NeoZygisk aligned.
