@@ -1,13 +1,17 @@
 // ═══════════════════════════════════════════════════════════════════════
-// QwennHide — jni/main.cpp (FINAL + Runtime State for WebUI)
+// QwennHide — jni/main.cpp v3.1.4
+// NeoZygisk aligned root hider with runtime state for WebUI.
 //
 // Modes:
-//   0 = Skip, 1 = Basic, 2 = Aggressive, 3 = Persistent
+//   0 = Skip
+//   1 = Basic
+//   2 = Aggressive
+//   3 = Persistent
 //
-// Runtime state:
-//   Companion menuliskan mode yang benar-benar dipakai ke:
+// Config:
+//   /data/adb/qwennhide/mode
+//   /data/adb/qwennhide/apps.list
 //   /data/adb/qwennhide/runtime/<package>
-//   Format: pid|action|timestamp
 // ═══════════════════════════════════════════════════════════════════════
 
 #include <cstdlib>
@@ -24,6 +28,7 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <utility>
 #include <cstdio>
 #include <ctime>
 #include <cctype>
@@ -41,23 +46,33 @@
 #define APPS_FILE   DATADIR "/apps.list"
 #define RUNTIME_DIR DATADIR "/runtime"
 
-// ─── Paths ─────────────────────────────────────────────────────────────
 static const char *FD_CHECK_PATHS[] = {
-    "/sbin/.magisk", "/data/adb/magisk", "/data/adb/modules",
-    "/system/bin/su", "/system/xbin/su", "/sbin/su",
-    "/system/bin/.ext/.su", nullptr
+    "/sbin/.magisk",
+    "/data/adb/magisk",
+    "/data/adb/modules",
+    "/system/bin/su",
+    "/system/xbin/su",
+    "/sbin/su",
+    "/system/bin/.ext/.su",
+    nullptr
 };
 
 static const char *UNMOUNT_PATHS[] = {
-    "/sbin/.magisk", "/data/adb/magisk", "/data/adb/modules",
-    "/dev/.magisk", "/dev/.magisk.unblock", nullptr
+    "/sbin/.magisk",
+    "/data/adb/magisk",
+    "/data/adb/modules",
+    "/dev/.magisk",
+    "/dev/.magisk.unblock",
+    nullptr
 };
 
 static const char *NEOZYGISK_CLEANUP_PATHS[] = {
-    "/dev/zygisk", "/dev/neozygisk", "/dev/zygisksu", nullptr
+    "/dev/zygisk",
+    "/dev/neozygisk",
+    "/dev/zygisksu",
+    nullptr
 };
 
-// ─── String helpers ────────────────────────────────────────────────────
 static std::string trimStr(const std::string &s) {
     size_t a = s.find_first_not_of(" \t\r\n");
     if (a == std::string::npos) return "";
@@ -86,7 +101,6 @@ static std::string safeFileName(const std::string &s) {
     return out;
 }
 
-// ─── Runtime state ─────────────────────────────────────────────────────
 static void writeRuntimeState(const std::string &pkg, uint32_t pid, uint8_t action) {
     mkdir(RUNTIME_DIR, 0700);
 
@@ -118,7 +132,6 @@ static void removeRuntimeState(const std::string &pkg) {
     unlink(file.c_str());
 }
 
-// ─── Config readers ────────────────────────────────────────────────────
 static std::string getDefaultMode() {
     std::string m = readFirstLine(MODE_FILE);
     if (m != "basic" && m != "aggressive" && m != "persistent") m = "basic";
@@ -142,7 +155,7 @@ static std::string getAppMode(const std::string &pkg) {
             std::string val = trimStr(line.substr(sep + 1));
 
             if (key == pkg) {
-                result = val; // entry terakhir menang
+                result = val;
             }
         }
     }
@@ -151,7 +164,6 @@ static std::string getAppMode(const std::string &pkg) {
     return getDefaultMode();
 }
 
-// ─── Cleanup utilities ─────────────────────────────────────────────────
 static void closeLeakedFds() {
     DIR *fd_dir = opendir("/proc/self/fd");
     if (!fd_dir) return;
@@ -287,7 +299,6 @@ static void cleanNeoZygiskTraces() {
     }
 }
 
-// ─── DenyList check (multi-source) ─────────────────────────────────────
 static bool isInDenyList(const std::string &pkg) {
     FILE *pipe = popen("magisk --denylist ls 2>/dev/null", "r");
     if (pipe) {
@@ -359,7 +370,6 @@ static bool isInDenyList(const std::string &pkg) {
     return false;
 }
 
-// ─── Companion handler ─────────────────────────────────────────────────
 static void companionHandler(int client_fd) {
     uint32_t len = 0;
     if (read(client_fd, &len, sizeof(len)) != sizeof(len) || len == 0 || len > 512) {
@@ -408,13 +418,12 @@ static void companionHandler(int client_fd) {
     write(client_fd, &action, 1);
 }
 
-// ─── Main module ───────────────────────────────────────────────────────
 class QwennHide : public zygisk::ModuleBase {
 public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
         this->api = api;
         this->env = env;
-        LOGI("QwennHide loaded (runtime state enabled)");
+        LOGI("QwennHide loaded (v3.1.4 runtime state)");
     }
 
     void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
