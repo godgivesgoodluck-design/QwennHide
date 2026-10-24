@@ -8,7 +8,7 @@ on:
 
 env:
   MODULE_ID: qwennhide
-  MODULE_VERSION: v3.1.4
+  MODULE_VERSION: v3.1.5
 
 jobs:
   build:
