@@ -1,13 +1,13 @@
 #!/system/bin/sh
 # ═══════════════════════════════════════════════════════════════════════
-# QwennHide — customize.sh v3.1.4
+# QwennHide — customize.sh v3.1.5
 # ═══════════════════════════════════════════════════════════════════════
 
 SKIPUNZIP=1
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ui_print "     QwennHide v3.1.4"
-ui_print "     NeoZygisk aligned + WebUI"
+ui_print "     QwennHide v3.1.5"
+ui_print "     Verified per-app mode + NeoZygisk aligned"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 if [ "$ZYGISK_ENABLED" != "1" ]; then
