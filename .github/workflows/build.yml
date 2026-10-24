@@ -8,17 +8,20 @@ on:
 
 env:
   MODULE_ID: qwennhide
-  MODULE_VERSION: v3.1.0
+  MODULE_VERSION: v3.1.2
 
 jobs:
   build:
     runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
       - name: Normalize line endings
         run: |
           find . -type f \( -name '*.sh' -o -name '*.html' -o -name '*.cpp' -o -name '*.hpp' -o -name '*.prop' -o -name '*.txt' -o -name '*.yml' -o -name '*.yaml' \) -print0 | xargs -0 sed -i 's/\r$//'
+
       - name: Install NDK
         run: |
           export ANDROID_HOME=/usr/local/lib/android/sdk
@@ -43,11 +46,13 @@ jobs:
           cd build/arm64-v8a
           cmake ../.. -GNinja \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build .
           cd ../..
           cp build/arm64-v8a/libqwennhide.so zygisk/arm64-v8a.so
+          ls -lh zygisk/arm64-v8a.so
 
       - name: Build armeabi-v7a
         run: |
@@ -55,11 +60,13 @@ jobs:
           cd build/armeabi-v7a
           cmake ../.. -GNinja \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-26 \
+            -DANDROID_ABI=armeabi-v7a \
+            -DANDROID_PLATFORM=android-26 \
             -DCMAKE_BUILD_TYPE=Release
           cmake --build .
           cd ../..
           cp build/armeabi-v7a/libqwennhide.so zygisk/armeabi-v7a.so
+          ls -lh zygisk/armeabi-v7a.so
 
       - name: Package module
         run: |
@@ -90,16 +97,39 @@ jobs:
           cd pkg
           zip -r9 ../${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip .
           cd ..
+
           sha256sum ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip > checksum.txt
 
-      - name: Verify package
+      - name: Verify package contents
         run: |
+          echo "=== Package Contents ==="
           unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip
-          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "webroot/index.html" || (echo "webroot MISSING"; exit 1)
-          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "api.sh" || (echo "api.sh MISSING"; exit 1)
-          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "zygisk/arm64-v8a.so" || (echo "arm64 MISSING"; exit 1)
 
-      - uses: actions/upload-artifact@v4
+          echo ""
+          echo "=== Required Files ==="
+          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "module.prop" || (echo "module.prop MISSING"; exit 1)
+          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "customize.sh" || (echo "customize.sh MISSING"; exit 1)
+          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "service.sh" || (echo "service.sh MISSING"; exit 1)
+          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "action.sh" || (echo "action.sh MISSING"; exit 1)
+          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "uninstall.sh" || (echo "uninstall.sh MISSING"; exit 1)
+          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "api.sh" || (echo "api.sh MISSING"; exit 1)
+          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "webroot/index.html" || (echo "webroot/index.html MISSING"; exit 1)
+          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "zygisk/arm64-v8a.so" || (echo "arm64-v8a.so MISSING"; exit 1)
+          unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -q "zygisk/armeabi-v7a.so" || (echo "armeabi-v7a.so MISSING"; exit 1)
+
+          echo ""
+          echo "=== Forbidden Old Files ==="
+          if unzip -l ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip | grep -E 'post-fs-data.sh|src/|include/props.h|proc_filter|mount_utils'; then
+            echo "Unexpected old/residue files found"
+            exit 1
+          fi
+
+          echo ""
+          echo "=== ZIP Size ==="
+          ls -lh ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}
           path: |
