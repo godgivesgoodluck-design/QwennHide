@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # ═══════════════════════════════════════════════════════════════════════
-# QwennHide — api.sh v3.1.5
-# POSIX-safe, forced JSON, verified per-app mode, no awk dependency.
+# QwennHide — api.sh v3.1.6
+# Fixed parser for magisk --denylist ls format: package|process
 # ═══════════════════════════════════════════════════════════════════════
 
 BASE="/data/adb/qwennhide"
@@ -209,6 +209,12 @@ find_magisk() {
     printf ''
 }
 
+# ─── FIXED: Parser untuk format magisk --denylist ls ─────────────────
+# Format yang didukung:
+#   1. package|process          (Magisk Alpha/NeoZygisk)
+#   2. UID|package|process      (Magisk stable lama)
+#   3. isolated|package:        (entry isolated, di-skip)
+#   4. package saja             (fallback)
 normalize_pkgs() {
     while IFS= read -r _NP_LINE || [ -n "$_NP_LINE" ]; do
         _NP_LINE=$(printf '%s' "$_NP_LINE" | tr -d '\r' 2>/dev/null)
@@ -220,30 +226,58 @@ normalize_pkgs() {
 
         _NP_F1=""
         _NP_F2=""
+        _NP_F3=""
 
+        # Hitung jumlah field
+        _NP_COUNT=1
         case "$_NP_LINE" in
             *'|'*)
                 _NP_F1=${_NP_LINE%%|*}
-                _NP_F2=${_NP_LINE#*|}
+                _NP_REST=${_NP_LINE#*|}
+                _NP_COUNT=2
+                case "$_NP_REST" in
+                    *'|'*)
+                        _NP_F2=${_NP_REST%%|*}
+                        _NP_F3=${_NP_REST#*|}
+                        _NP_COUNT=3
+                        ;;
+                    *)
+                        _NP_F2="$_NP_REST"
+                        ;;
+                esac
                 ;;
             *)
                 _NP_F1="$_NP_LINE"
                 ;;
         esac
 
-        _NP_PKG="$_NP_F1"
+        _NP_PKG=""
 
-        if is_uint "$_NP_F1" && [ -n "$_NP_F2" ]; then
-            case "$_NP_F2" in
-                *'|'*)
-                    _NP_PKG=${_NP_F2%%|*}
-                    ;;
-                *)
-                    _NP_PKG="$_NP_F2"
-                    ;;
-            esac
+        if [ "$_NP_COUNT" -eq 3 ]; then
+            # Format: UID|package|process
+            if is_uint "$_NP_F1"; then
+                _NP_PKG="$_NP_F2"
+            else
+                _NP_PKG="$_NP_F1"
+            fi
+        elif [ "$_NP_COUNT" -eq 2 ]; then
+            # Format: package|process  ATAU  isolated|package:
+            if [ "$_NP_F1" = "isolated" ]; then
+                # Skip entry isolated
+                continue
+            elif is_uint "$_NP_F1"; then
+                # Format: UID|package
+                _NP_PKG="$_NP_F2"
+            else
+                # Format: package|process (yang paling umum)
+                _NP_PKG="$_NP_F1"
+            fi
+        else
+            # Format: package saja
+            _NP_PKG="$_NP_F1"
         fi
 
+        # Hapus suffix :process jika ada
         _NP_PKG=${_NP_PKG%%:*}
         _NP_PKG=$(printf '%s' "$_NP_PKG" | tr -d ' \t\r\n' 2>/dev/null)
 
