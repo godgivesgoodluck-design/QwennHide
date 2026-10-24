@@ -1,6 +1,6 @@
 id=qwennhide
 name=QwennHide
-version=v3.1.4
-versionCode=12
-author=YourName
-description=DenyList root hider with resilient WebUI, timeout guard, per-app colon mode, fingerprint normalization, NeoZygisk aligned.
+version=v3.1.5
+versionCode=13
+author=Qwenn
+description=DenyList root hider with verified per-app mode, POSIX-safe backend, fingerprint normalization, NeoZygisk aligned.
