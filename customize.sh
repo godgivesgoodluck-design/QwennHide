@@ -1,25 +1,24 @@
 #!/system/bin/sh
 # ═══════════════════════════════════════════════════════════════════════
-# QwennHide — customize.sh v3.1.2
+# QwennHide — customize.sh v3.1.4
 # ═══════════════════════════════════════════════════════════════════════
 
 SKIPUNZIP=1
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ui_print "     QwennHide v3.1.2"
+ui_print "     QwennHide v3.1.4"
 ui_print "     NeoZygisk aligned + WebUI"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 if [ "$ZYGISK_ENABLED" != "1" ]; then
-    ui_print "! Zygisk tidak aktif."
-    ui_print "! Aktifkan Zygisk atau install NeoZygisk/ZygiskNext."
-    abort
+    ui_print "! Warning: ZYGISK_ENABLED tidak terdeteksi sebagai 1."
+    ui_print "! Pastikan Zygisk/NeoZygisk/ZygiskNext aktif."
+else
+    ui_print "- Zygisk detected: OK"
 fi
 
-ui_print "- Zygisk detected: OK"
-
 if [ -z "$MAGISK_VER_CODE" ]; then
-    ui_print "! MAGISK_VER_CODE tidak terdeteksi."
+    ui_print "! Warning: MAGISK_VER_CODE tidak terdeteksi."
 else
     ui_print "- Magisk version code: $MAGISK_VER_CODE"
 fi
@@ -59,12 +58,12 @@ done
 
 if [ -d "$MODPATH/zygisk" ]; then
     chmod 0755 "$MODPATH/zygisk" 2>/dev/null
-    find "$MODPATH/zygisk" -type f -exec chmod 0755 {} \; 2>/dev/null
+    find "$MODPATH/zygisk" -type f -exec chmod 0755 {} + 2>/dev/null
 fi
 
 if [ -d "$MODPATH/webroot" ]; then
     chmod 0755 "$MODPATH/webroot" 2>/dev/null
-    find "$MODPATH/webroot" -type f -exec chmod 0644 {} \; 2>/dev/null
+    find "$MODPATH/webroot" -type f -exec chmod 0644 {} + 2>/dev/null
 fi
 
 if [ ! -f "$MODPATH/api.sh" ]; then
