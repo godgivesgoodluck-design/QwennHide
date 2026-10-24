@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # ═══════════════════════════════════════════════════════════════════════
-# QwennHide — service.sh v3.1.3
+# QwennHide — service.sh v3.1.4
 # Prop spoofing global + fingerprint normalization untuk Momo/GSI.
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -32,7 +32,6 @@ if [ "$PROP_ENABLED" != "1" ]; then
     exit 0
 fi
 
-# ─── Detect resetprop ──────────────────────────────────────────────────
 HAS_RESETPROP=0
 RESETPROP_BIN=""
 
@@ -95,7 +94,6 @@ normalize_fp_prop() {
     fi
 }
 
-# ─── Core security/build props ─────────────────────────────────────────
 rp ro.debuggable 0
 rp ro.secure 1
 rp ro.build.type user
@@ -103,7 +101,6 @@ rp ro.build.tags release-keys
 
 log_msg "Core props applied"
 
-# ─── Partition-specific type props ─────────────────────────────────────
 for _TYPE_PROP in \
     ro.system.build.type \
     ro.vendor.build.type \
@@ -115,7 +112,6 @@ do
     set_if_present "$_TYPE_PROP" user
 done
 
-# ─── Partition-specific tags props ─────────────────────────────────────
 for _TAGS_PROP in \
     ro.system.build.tags \
     ro.vendor.build.tags \
@@ -127,8 +123,6 @@ do
     set_if_present "$_TAGS_PROP" release-keys
 done
 
-# ─── Normalize fingerprints ────────────────────────────────────────────
-# Ini yang menangani Momo mendeteksi fingerprint user + userdebug.
 for _FP_PROP in \
     ro.build.fingerprint \
     ro.system.build.fingerprint \
@@ -141,7 +135,6 @@ do
     normalize_fp_prop "$_FP_PROP"
 done
 
-# ─── Delete obvious Magisk/root props ──────────────────────────────────
 rp --delete ro.magisk.hide
 rp --delete ro.boot.magisk
 rp --delete ro.magisk.version
@@ -150,8 +143,6 @@ rp --delete persist.magisk.zygisk
 
 log_msg "Magisk props deleted"
 
-# ─── Optional GSI/bootloader/encryption spoofing ───────────────────────
-# Ini tetap sama seperti sebelumnya.
 rp ro.boot.verifiedbootstate green
 rp ro.boot.flash.locked 1
 rp ro.boot.veritymode enforcing
@@ -162,7 +153,6 @@ rp ro.crypto.type file
 
 log_msg "GSI/bootloader/encryption props applied"
 
-# ─── Trim log ──────────────────────────────────────────────────────────
 LOG_SIZE=$(wc -c < "$LOGFILE" 2>/dev/null || echo 0)
 case "$LOG_SIZE" in
     ''|*[!0-9]*) LOG_SIZE=0 ;;
