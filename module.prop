@@ -1,6 +1,6 @@
 id=qwennhide
 name=QwennHide
-version=v3.1.3
-versionCode=11
+version=v3.1.4
+versionCode=12
 author=YourName
-description=DenyList root hider with WebUI, per-app mode debug log, fingerprint normalization for Momo, NeoZygisk aligned.
+description=DenyList root hider with resilient WebUI, timeout guard, per-app colon mode, fingerprint normalization, NeoZygisk aligned.
