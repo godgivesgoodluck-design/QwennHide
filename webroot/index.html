@@ -695,8 +695,7 @@ async function setAppMode(pkg, mode) {
     setRowStatus(pkg, "saving", "Menyimpan…");
     renderApps();
 
-    try {
-        await runApi(`${CMD} set ${pkg} ${mode}`);
+    await runApi(`${CMD} set ${pkg}:${mode}`);
 
         const app = (data.apps || []).find(a => a.pkg === pkg);
         if (app) {
