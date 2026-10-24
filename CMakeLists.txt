@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(qwennhide SHARED jni/main.cpp)
 
+target_include_directories(qwennhide PRIVATE jni)
+
 target_compile_options(qwennhide PRIVATE
     -O2
     -Wall
@@ -22,5 +24,4 @@ target_link_options(qwennhide PRIVATE
     -Wl,-s
 )
 
-# ⭐ TAMBAHKAN INI: Link library log untuk __android_log_print
 target_link_libraries(qwennhide PRIVATE log)
