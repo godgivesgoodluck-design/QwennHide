@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # ═══════════════════════════════════════════════════════════════════════
-# QwennHide — api.sh v3.1.4
-# POSIX-safe, forced JSON, timeout guard, per-app colon mode, debug log.
+# QwennHide — api.sh v3.1.5
+# POSIX-safe, forced JSON, verified per-app mode, no awk dependency.
 # ═══════════════════════════════════════════════════════════════════════
 
 BASE="/data/adb/qwennhide"
@@ -49,6 +49,13 @@ valid_mode() {
     esac
 }
 
+valid_override_mode() {
+    case "$1" in
+        basic|aggressive|persistent) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 dbg_log() {
     _DL_TS=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
     [ -n "$_DL_TS" ] || _DL_TS="-"
@@ -56,7 +63,7 @@ dbg_log() {
     mkdir -p "$BASE" 2>/dev/null
     printf '[%s] %s\n' "$_DL_TS" "$*" >> "$DBG_LOG" 2>/dev/null
 
-    _DL_SZ=$(wc -c < "$DBG_LOG" 2>/dev/null)
+    _DL_SZ=$(wc -c < "$DBG_LOG" 2>/dev/null | tr -d ' \t\r\n')
     case "$_DL_SZ" in
         ''|*[!0-9]*) _DL_SZ=0 ;;
     esac
@@ -109,10 +116,75 @@ get_prop() {
 }
 
 get_app_override() {
-    awk -F'|' -v p="$1" '
-        $1 == p { m = $2 }
-        END { if (m != "") print m }
-    ' "$APPS_FILE" 2>/dev/null
+    _GAO_PKG="$1"
+    _GAO_FOUND=""
+
+    [ -r "$APPS_FILE" ] || return 0
+
+    while IFS= read -r _GAO_LINE || [ -n "$_GAO_LINE" ]; do
+        _GAO_LINE=$(printf '%s' "$_GAO_LINE" | tr -d '\r' 2>/dev/null)
+        [ -z "$_GAO_LINE" ] && continue
+
+        case "$_GAO_LINE" in
+            '#'*) continue ;;
+        esac
+
+        case "$_GAO_LINE" in
+            *'|'*)
+                _GAO_K=${_GAO_LINE%%|*}
+                _GAO_V=${_GAO_LINE#*|}
+                ;;
+            *)
+                continue
+                ;;
+        esac
+
+        _GAO_K=$(printf '%s' "$_GAO_K" | tr -d ' \t\r\n' 2>/dev/null)
+        _GAO_V=$(printf '%s' "$_GAO_V" | tr -d ' \t\r\n' 2>/dev/null)
+
+        if [ "$_GAO_K" = "$_GAO_PKG" ]; then
+            _GAO_FOUND="$_GAO_V"
+        fi
+    done < "$APPS_FILE"
+
+    printf '%s' "$_GAO_FOUND"
+}
+
+count_apps_entries() {
+    _CAE_COUNT=0
+
+    [ -r "$APPS_FILE" ] || {
+        printf '0'
+        return
+    }
+
+    while IFS= read -r _CAE_LINE || [ -n "$_CAE_LINE" ]; do
+        _CAE_LINE=$(printf '%s' "$_CAE_LINE" | tr -d '\r' 2>/dev/null)
+        [ -z "$_CAE_LINE" ] && continue
+
+        case "$_CAE_LINE" in
+            '#'*) continue ;;
+        esac
+
+        case "$_CAE_LINE" in
+            *'|'*)
+                _CAE_K=${_CAE_LINE%%|*}
+                _CAE_V=${_CAE_LINE#*|}
+                ;;
+            *)
+                continue
+                ;;
+        esac
+
+        _CAE_K=$(printf '%s' "$_CAE_K" | tr -d ' \t\r\n' 2>/dev/null)
+        _CAE_V=$(printf '%s' "$_CAE_V" | tr -d ' \t\r\n' 2>/dev/null)
+
+        if valid_pkg "$_CAE_K" && valid_override_mode "$_CAE_V"; then
+            _CAE_COUNT=$((_CAE_COUNT + 1))
+        fi
+    done < "$APPS_FILE"
+
+    printf '%s' "$_CAE_COUNT"
 }
 
 find_magisk() {
@@ -138,23 +210,47 @@ find_magisk() {
 }
 
 normalize_pkgs() {
-    awk -F'|' '
-    {
-        sub(/\r$/, "")
-        if ($0 ~ /^[ \t]*#/) next
+    while IFS= read -r _NP_LINE || [ -n "$_NP_LINE" ]; do
+        _NP_LINE=$(printf '%s' "$_NP_LINE" | tr -d '\r' 2>/dev/null)
+        [ -z "$_NP_LINE" ] && continue
 
-        pkg = $1
-        if ($1 ~ /^[ \t]*[0-9]+[ \t]*$/ && NF >= 2) {
-            pkg = $2
-        }
+        case "$_NP_LINE" in
+            '#'*) continue ;;
+        esac
 
-        gsub(/^[ \t\r]+|[ \t\r]+$/, "", pkg)
-        sub(/:.*/, "", pkg)
+        _NP_F1=""
+        _NP_F2=""
 
-        if (pkg ~ /^[A-Za-z][A-Za-z0-9._]*$/) {
-            print pkg
-        }
-    }' 2>/dev/null
+        case "$_NP_LINE" in
+            *'|'*)
+                _NP_F1=${_NP_LINE%%|*}
+                _NP_F2=${_NP_LINE#*|}
+                ;;
+            *)
+                _NP_F1="$_NP_LINE"
+                ;;
+        esac
+
+        _NP_PKG="$_NP_F1"
+
+        if is_uint "$_NP_F1" && [ -n "$_NP_F2" ]; then
+            case "$_NP_F2" in
+                *'|'*)
+                    _NP_PKG=${_NP_F2%%|*}
+                    ;;
+                *)
+                    _NP_PKG="$_NP_F2"
+                    ;;
+            esac
+        fi
+
+        _NP_PKG=${_NP_PKG%%:*}
+        _NP_PKG=$(printf '%s' "$_NP_PKG" | tr -d ' \t\r\n' 2>/dev/null)
+
+        if valid_pkg "$_NP_PKG"; then
+            printf '%s\n' "$_NP_PKG"
+        fi
+    done
 }
 
 get_denylist_packages() {
@@ -323,11 +419,21 @@ cmd_diag() {
         done
     fi
 
-    printf '{"magisk_found":%s,"magisk_bin":"%s","denylist_count":%s,"runtime_count":%s,"files":{' \
+    if [ -r "$APPS_FILE" ]; then
+        _CD_APPS_READABLE=true
+    else
+        _CD_APPS_READABLE=false
+    fi
+
+    _CD_APPS_COUNT=$(count_apps_entries)
+
+    printf '{"magisk_found":%s,"magisk_bin":"%s","denylist_count":%s,"runtime_count":%s,"apps_list_readable":%s,"apps_list_count":%s,"files":{' \
         "$_CD_MAGISK_FOUND" \
         "$_CD_M" \
         "$_CD_COUNT" \
-        "$_CD_RT_COUNT"
+        "$_CD_RT_COUNT" \
+        "$_CD_APPS_READABLE" \
+        "$_CD_APPS_COUNT"
 
     _CD_FIRST=1
     for _CD_F in $DENY_FILES "$BASE/umount_list"; do
@@ -397,7 +503,41 @@ cmd_set() {
 
     _CS_TMP="$APPS_FILE.tmp"
 
-    awk -F'|' -v p="$_CS_PKG" '$1 != p' "$APPS_FILE" > "$_CS_TMP" 2>/dev/null || : > "$_CS_TMP" 2>/dev/null
+    if ! : > "$_CS_TMP" 2>/dev/null; then
+        dbg_log "SET tmp_create_failed pkg=[$_CS_PKG] mode=[$_CS_MODE]"
+        printf '{"ok":false,"error":"tmp_create_failed"}\n'
+        return 1
+    fi
+
+    if [ -r "$APPS_FILE" ]; then
+        while IFS= read -r _CS_LINE || [ -n "$_CS_LINE" ]; do
+            _CS_LINE=$(printf '%s' "$_CS_LINE" | tr -d '\r' 2>/dev/null)
+            [ -z "$_CS_LINE" ] && continue
+
+            case "$_CS_LINE" in
+                '#'*) continue ;;
+            esac
+
+            case "$_CS_LINE" in
+                *'|'*)
+                    _CS_K=${_CS_LINE%%|*}
+                    _CS_V=${_CS_LINE#*|}
+                    ;;
+                *)
+                    continue
+                    ;;
+            esac
+
+            _CS_K=$(printf '%s' "$_CS_K" | tr -d ' \t\r\n' 2>/dev/null)
+            _CS_V=$(printf '%s' "$_CS_V" | tr -d ' \t\r\n' 2>/dev/null)
+
+            [ "$_CS_K" = "$_CS_PKG" ] && continue
+
+            if valid_pkg "$_CS_K" && valid_override_mode "$_CS_V"; then
+                printf '%s|%s\n' "$_CS_K" "$_CS_V" >> "$_CS_TMP" 2>/dev/null
+            fi
+        done < "$APPS_FILE"
+    fi
 
     if [ "$_CS_MODE" != "default" ]; then
         printf '%s|%s\n' "$_CS_PKG" "$_CS_MODE" >> "$_CS_TMP" 2>/dev/null
@@ -410,6 +550,23 @@ cmd_set() {
     fi
 
     chmod 600 "$APPS_FILE" 2>/dev/null
+    sync 2>/dev/null
+
+    _CS_CHECK=$(get_app_override "$_CS_PKG")
+
+    if [ "$_CS_MODE" = "default" ]; then
+        if [ -n "$_CS_CHECK" ]; then
+            dbg_log "SET verify_failed pkg=[$_CS_PKG] expected=default got=[$_CS_CHECK]"
+            printf '{"ok":false,"error":"verify_failed"}\n'
+            return 1
+        fi
+    else
+        if [ "$_CS_CHECK" != "$_CS_MODE" ]; then
+            dbg_log "SET verify_failed pkg=[$_CS_PKG] expected=[$_CS_MODE] got=[$_CS_CHECK]"
+            printf '{"ok":false,"error":"verify_failed"}\n'
+            return 1
+        fi
+    fi
 
     dbg_log "SET ok pkg=[$_CS_PKG] mode=[$_CS_MODE]"
     printf '{"ok":true}\n'
@@ -437,6 +594,15 @@ cmd_default() {
     }
 
     chmod 600 "$MODE_FILE" 2>/dev/null
+    sync 2>/dev/null
+
+    _CDFT_CHECK=$(get_first_line "$MODE_FILE" 2>/dev/null)
+    if [ "$_CDFT_CHECK" != "$_CDFT_MODE" ]; then
+        dbg_log "DEFAULT verify_failed expected=[$_CDFT_MODE] got=[$_CDFT_CHECK]"
+        printf '{"ok":false,"error":"verify_failed"}\n'
+        return 1
+    fi
+
     dbg_log "DEFAULT ok mode=[$_CDFT_MODE]"
     printf '{"ok":true}\n'
 }
@@ -463,6 +629,15 @@ cmd_prop() {
     }
 
     chmod 600 "$PROP_FILE" 2>/dev/null
+    sync 2>/dev/null
+
+    _CPROP_CHECK=$(get_first_line "$PROP_FILE" 2>/dev/null)
+    if [ "$_CPROP_CHECK" != "$_CPROP_VAL" ]; then
+        dbg_log "PROP verify_failed expected=[$_CPROP_VAL] got=[$_CPROP_CHECK]"
+        printf '{"ok":false,"error":"verify_failed"}\n'
+        return 1
+    fi
+
     dbg_log "PROP ok val=[$_CPROP_VAL]"
     printf '{"ok":true,"reboot_required":true}\n'
 }
@@ -478,6 +653,15 @@ cmd_reset_all() {
     }
 
     chmod 600 "$APPS_FILE" 2>/dev/null
+    sync 2>/dev/null
+
+    _RA_CHECK=$(count_apps_entries)
+    if [ "$_RA_CHECK" != "0" ]; then
+        dbg_log "RESET_ALL verify_failed count=[$_RA_CHECK]"
+        printf '{"ok":false,"error":"verify_failed"}\n'
+        return 1
+    fi
+
     dbg_log "RESET_ALL ok"
     printf '{"ok":true}\n'
 }
