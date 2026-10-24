@@ -1,6 +1,6 @@
 id=qwennhide
 name=QwennHide
-version=v3.1.1
-versionCode=9
+version=v3.1.2
+versionCode=10
 author=YourName
-description=DenyList root hider with WebUI, runtime mode display, forced JSON backend, NeoZygisk aligned.
+description=DenyList root hider with WebUI, runtime mode display, POSIX-safe JSON backend, NeoZygisk aligned.
