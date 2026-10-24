@@ -196,7 +196,7 @@
 
 <h1>QwennHide</h1>
 <div class="sub">
-    WebUI v3.1.4 — resilient bridge timeout, visible errors, per-app colon mode.
+    WebUI v3.1.5 — verified per-app mode, backend read-back, no silent local-only change.
 </div>
 
 <div id="fatal" class="card hidden"></div>
@@ -234,8 +234,7 @@
         <button class="secondary" onclick="resetAllOverrides()">Reset override</button>
     </div>
     <div class="small" style="margin-top:8px">
-        Jika loading berhenti sendiri dalam 8 detik, berarti bridge/command timeout.
-        Cek terminal: <code>sh /data/adb/modules/qwennhide/api.sh list</code>
+        Mode per-app sekarang diverifikasi ke backend. Jika tidak tersimpan, WebUI akan menampilkan error.
     </div>
 </div>
 
@@ -593,6 +592,13 @@ function normalizeData() {
     if (!data.apps || Object.prototype.toString.call(data.apps) !== "[object Array]") data.apps = [];
 }
 
+function findApp(pkg) {
+    for (var i = 0; i < data.apps.length; i++) {
+        if (data.apps[i].pkg === pkg) return data.apps[i];
+    }
+    return null;
+}
+
 function loadData(clearStatus, manual) {
     if (clearStatus) rowStatus = {};
 
@@ -603,11 +609,15 @@ function loadData(clearStatus, manual) {
         renderApps();
 
         if (manual && data.apps.length === 0) {
-            return loadDiag(true);
+            return loadDiag(true).then(function () {
+                return data;
+            });
         } else if (data.apps.length > 0) {
             hideDiag();
             hideRaw();
         }
+
+        return data;
     });
 }
 
@@ -771,29 +781,26 @@ function setAppMode(pkg, mode) {
         return;
     }
 
-    setRowStatus(pkg, "saving", "Menyimpan…");
+    setRowStatus(pkg, "saving", "Menyimpan & memverifikasi…");
     renderApps();
 
     runApi(CMD + " set " + pkg + ":" + mode).then(function () {
-        var app = null;
-        for (var i = 0; i < data.apps.length; i++) {
-            if (data.apps[i].pkg === pkg) {
-                app = data.apps[i];
-                break;
-            }
+        return loadData(false, false);
+    }).then(function () {
+        var app = findApp(pkg);
+        var ok;
+
+        if (mode === "default") {
+            ok = !app || !app.overridden;
+        } else {
+            ok = app && app.overridden && app.mode === mode;
         }
 
-        if (app) {
-            if (mode === "default") {
-                app.overridden = false;
-                app.mode = data.default_mode;
-            } else {
-                app.overridden = true;
-                app.mode = mode;
-            }
+        if (!ok) {
+            throw new Error("Backend tidak menyimpan mode per-app");
         }
 
-        setRowStatus(pkg, "ok", "✓ Mode diterapkan");
+        setRowStatus(pkg, "ok", "✓ Mode diterapkan & terverifikasi");
         scheduleClear(pkg, 4000);
         renderApps();
     }).catch(function (e) {
@@ -809,7 +816,12 @@ function setDefaultMode(mode) {
     pauseAuto();
 
     runApi(CMD + " default " + mode).then(function () {
-        data.default_mode = mode;
+        return loadData(false, false);
+    }).then(function () {
+        if (data.default_mode !== mode) {
+            throw new Error("Backend tidak menyimpan default mode");
+        }
+
         showStatus("Default mode → " + mode);
         renderApps();
     }).catch(function (e) {
@@ -823,13 +835,17 @@ function setPropSpoof(v) {
     pauseAuto();
 
     runApi(CMD + " prop " + v).then(function (obj) {
-        data.prop_spoof = v;
+        return loadData(false, false).then(function () {
+            if (data.prop_spoof !== v) {
+                throw new Error("Backend tidak menyimpan prop spoofing");
+            }
 
-        if (obj && obj.reboot_required) {
-            showStatus("Prop spoofing diubah. REBOOT diperlukan.");
-        } else {
-            showStatus("Prop spoofing diubah.");
-        }
+            if (obj && obj.reboot_required) {
+                showStatus("Prop spoofing diubah. REBOOT diperlukan.");
+            } else {
+                showStatus("Prop spoofing diubah.");
+            }
+        });
     }).catch(function (e) {
         var msg = errMsg(e);
         showStatus("Gagal mengubah prop spoofing: " + msg, true);
@@ -843,9 +859,12 @@ function resetAllOverrides() {
     if (!confirm("Hapus semua override per-app?")) return;
 
     runApi(CMD + " reset-all").then(function () {
+        return loadData(false, false);
+    }).then(function () {
         for (var i = 0; i < data.apps.length; i++) {
-            data.apps[i].overridden = false;
-            data.apps[i].mode = data.default_mode;
+            if (data.apps[i].overridden) {
+                throw new Error("Masih ada override yang tersimpan di backend");
+            }
         }
 
         rowStatus = {};
@@ -881,12 +900,14 @@ function loadDiag(auto) {
 
     return runApi(CMD + " diag").then(function (d) {
         renderDiag(d, auto);
+        return d;
     }).catch(function (e) {
         var msg = errMsg(e);
         el.innerHTML =
             "<b class='danger'>Debug gagal</b>" +
             "<div class='error'>" + escapeHtml(msg) + "</div>";
         showRaw("Debug gagal", lastRaw || msg);
+        throw e;
     });
 }
 
@@ -898,6 +919,8 @@ function renderDiag(d, auto) {
     var magisk = d.magisk_bin || "";
     var count = Number(d.denylist_count || 0);
     var runtimeCount = Number(d.runtime_count || 0);
+    var appsReadable = d.apps_list_readable === true;
+    var appsCount = Number(d.apps_list_count || 0);
     var files = d.files || {};
     var packages = d.packages || [];
 
@@ -928,6 +951,10 @@ function renderDiag(d, auto) {
         advice =
             "<div class='ok'>Denylist terdeteksi." +
             " Jika WebUI tetap kosong, kemungkinan cache WebUI lama. Reinstall module atau clear cache manager.</div>";
+    }
+
+    if (!appsReadable) {
+        advice += "<div class='warn'>apps.list tidak terbaca oleh backend.</div>";
     }
 
     var fileList = "";
@@ -963,6 +990,11 @@ function renderDiag(d, auto) {
         "<div class='small'>" +
         "<b>runtime state tercatat:</b> " +
         "<span class='" + (runtimeCount > 0 ? "ok" : "muted") + "'>" + runtimeCount + "</span></div>" +
+
+        "<div class='small'>" +
+        "<b>apps.list terbaca:</b> " +
+        "<span class='" + (appsReadable ? "ok" : "danger") + "'>" + (appsReadable ? "ya" : "tidak") + "</span>" +
+        " | <b>override tersimpan:</b> " + appsCount + "</div>" +
 
         "<div class='small' style='margin-top:8px'><b>File sumber:</b></div>" +
         "<div class='mono'>" + fileList + "</div>" +
