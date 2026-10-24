@@ -1,54 +1,84 @@
 #!/system/bin/sh
 # ═══════════════════════════════════════════════════════════════════════
-# QwennHide — customize.sh
+# QwennHide — customize.sh v3.1.2
 # ═══════════════════════════════════════════════════════════════════════
 
 SKIPUNZIP=1
 
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ui_print "     QwennHide — NeoZygisk Aligned"
+ui_print "     QwennHide v3.1.2"
+ui_print "     NeoZygisk aligned + WebUI"
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 if [ "$ZYGISK_ENABLED" != "1" ]; then
-    ui_print "! Zygisk tidak aktif. Aborting."
+    ui_print "! Zygisk tidak aktif."
+    ui_print "! Aktifkan Zygisk atau install NeoZygisk/ZygiskNext."
     abort
 fi
 
-# ─── Extract file utama ─────────────────────────────────────────────────
+ui_print "- Zygisk detected: OK"
+
+if [ -z "$MAGISK_VER_CODE" ]; then
+    ui_print "! MAGISK_VER_CODE tidak terdeteksi."
+else
+    ui_print "- Magisk version code: $MAGISK_VER_CODE"
+fi
+
+ui_print "- Extracting module files..."
+
 unzip -o "$ZIPFILE" 'module.prop' -d "$MODPATH" >/dev/null 2>&1
 unzip -o "$ZIPFILE" 'zygisk/*' -d "$MODPATH" >/dev/null 2>&1
 unzip -o "$ZIPFILE" 'service.sh' -d "$MODPATH" >/dev/null 2>&1
 unzip -o "$ZIPFILE" 'action.sh' -d "$MODPATH" >/dev/null 2>&1
 unzip -o "$ZIPFILE" 'uninstall.sh' -d "$MODPATH" >/dev/null 2>&1
-
-# ─── Extract WebUI + API ────────────────────────────────────────────────
 unzip -o "$ZIPFILE" 'api.sh' -d "$MODPATH" >/dev/null 2>&1
 unzip -o "$ZIPFILE" 'webroot/*' -d "$MODPATH" >/dev/null 2>&1
 
-# ─── Buat data dir + config default ────────────────────────────────────
 DATADIR="/data/adb/qwennhide"
-mkdir -p "$DATADIR"
-[ -f "$DATADIR/mode" ]       || echo "basic" > "$DATADIR/mode"
-[ -f "$DATADIR/prop_spoof" ] || echo "0" > "$DATADIR/prop_spoof"
-[ -f "$DATADIR/apps.list" ]  || : > "$DATADIR/apps.list"
-chmod 700 "$DATADIR"
+RUNTIME_DIR="$DATADIR/runtime"
+
+mkdir -p "$DATADIR" 2>/dev/null
+mkdir -p "$RUNTIME_DIR" 2>/dev/null
+
+[ -f "$DATADIR/mode" ] || printf 'basic\n' > "$DATADIR/mode" 2>/dev/null
+[ -f "$DATADIR/prop_spoof" ] || printf '0\n' > "$DATADIR/prop_spoof" 2>/dev/null
+[ -f "$DATADIR/apps.list" ] || : > "$DATADIR/apps.list" 2>/dev/null
+
+chmod 700 "$DATADIR" 2>/dev/null
+chmod 700 "$RUNTIME_DIR" 2>/dev/null
 chmod 600 "$DATADIR/mode" "$DATADIR/prop_spoof" "$DATADIR/apps.list" 2>/dev/null
 
-# ─── Permissions ────────────────────────────────────────────────────────
-set_perm_recursive "$MODPATH" root root 0755 0644
-set_perm "$MODPATH/service.sh"  root root 0755
-set_perm "$MODPATH/action.sh"   root root 0755
-set_perm "$MODPATH/uninstall.sh" root root 0755
-set_perm "$MODPATH/api.sh"      root root 0755
+ui_print "- Data dir : $DATADIR"
+ui_print "- Runtime  : $RUNTIME_DIR"
 
-if [ -d "$MODPATH/webroot" ]; then
-    chmod 755 "$MODPATH/webroot"
-    find "$MODPATH/webroot" -type f -exec chmod 644 {} \;
+for f in customize.sh service.sh action.sh uninstall.sh api.sh; do
+    if [ -f "$MODPATH/$f" ]; then
+        chmod 0755 "$MODPATH/$f" 2>/dev/null
+    fi
+done
+
+if [ -d "$MODPATH/zygisk" ]; then
+    chmod 0755 "$MODPATH/zygisk" 2>/dev/null
+    find "$MODPATH/zygisk" -type f -exec chmod 0755 {} \; 2>/dev/null
 fi
 
-ui_print "- Data dir : $DATADIR"
-ui_print "- WebUI    : terinstall"
+if [ -d "$MODPATH/webroot" ]; then
+    chmod 0755 "$MODPATH/webroot" 2>/dev/null
+    find "$MODPATH/webroot" -type f -exec chmod 0644 {} \; 2>/dev/null
+fi
+
+if [ ! -f "$MODPATH/api.sh" ]; then
+    ui_print "! WARNING: api.sh tidak ditemukan di module dir."
+fi
+
+if [ ! -f "$MODPATH/webroot/index.html" ]; then
+    ui_print "! WARNING: webroot/index.html tidak ditemukan."
+fi
+
 ui_print ""
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ui_print "  Selesai! Reboot untuk menerapkan."
+ui_print "  Installation complete."
+ui_print "  Reboot untuk menerapkan."
+ui_print "  WebUI: buka lewat KSU WebUI / manager support."
+ui_print "  Fallback: tombol Action di halaman module."
 ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
