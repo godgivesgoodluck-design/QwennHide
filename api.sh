@@ -1,13 +1,7 @@
 #!/system/bin/sh
 # ═══════════════════════════════════════════════════════════════════════
-# QwennHide — api.sh v3.1.2
-# POSIX-safe backend untuk WebUI / Action button.
-#
-# Prinsip:
-#   - Selalu mencetak JSON valid ke stdout.
-#   - Semua stderr ditekan.
-#   - Tidak memakai local / bashism.
-#   - Jika gagal, tetap fallback JSON.
+# QwennHide — api.sh v3.1.4
+# POSIX-safe, forced JSON, timeout guard, per-app colon mode, debug log.
 # ═══════════════════════════════════════════════════════════════════════
 
 BASE="/data/adb/qwennhide"
@@ -26,7 +20,6 @@ DENY_FILES="
 /data/adb/zygisknext/denylist
 "
 
-# ─── Root guard ────────────────────────────────────────────────────────
 if command -v id >/dev/null 2>&1; then
     _RG_UID=$(id -u 2>/dev/null)
     if [ -n "$_RG_UID" ] && [ "$_RG_UID" != "0" ]; then
@@ -34,8 +27,6 @@ if command -v id >/dev/null 2>&1; then
         exit 0
     fi
 fi
-
-# ─── Validators ────────────────────────────────────────────────────────
 
 is_uint() {
     case "$1" in
@@ -58,7 +49,31 @@ valid_mode() {
     esac
 }
 
-# ─── Base helpers ──────────────────────────────────────────────────────
+dbg_log() {
+    _DL_TS=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
+    [ -n "$_DL_TS" ] || _DL_TS="-"
+
+    mkdir -p "$BASE" 2>/dev/null
+    printf '[%s] %s\n' "$_DL_TS" "$*" >> "$DBG_LOG" 2>/dev/null
+
+    _DL_SZ=$(wc -c < "$DBG_LOG" 2>/dev/null)
+    case "$_DL_SZ" in
+        ''|*[!0-9]*) _DL_SZ=0 ;;
+    esac
+
+    if [ "$_DL_SZ" -gt 262144 ]; then
+        tail -n 200 "$DBG_LOG" > "$DBG_LOG.tmp" 2>/dev/null
+        mv -f "$DBG_LOG.tmp" "$DBG_LOG" 2>/dev/null
+    fi
+}
+
+run_with_timeout() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 2 "$@" 2>/dev/null
+    else
+        "$@" 2>/dev/null
+    fi
+}
 
 ensure() {
     mkdir -p "$BASE" "$RUNTIME_DIR" 2>/dev/null
@@ -146,7 +161,7 @@ get_denylist_packages() {
     {
         _GDP_MAGISK=$(find_magisk)
         if [ -n "$_GDP_MAGISK" ]; then
-            "$_GDP_MAGISK" --denylist ls 2>/dev/null | normalize_pkgs
+            run_with_timeout "$_GDP_MAGISK" --denylist ls | normalize_pkgs
         fi
 
         for _GDP_F in $DENY_FILES "$BASE/umount_list"; do
@@ -197,25 +212,6 @@ fallback_list_error() {
 fallback_ok_error() {
     printf '{"ok":false,"error":"%s"}\n' "$1"
 }
-
-dbg_log() {
-    _DL_TS=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
-    [ -n "$_DL_TS" ] || _DL_TS="-"
-
-    printf '[%s] %s\n' "$_DL_TS" "$*" >> "$DBG_LOG" 2>/dev/null
-
-    _DL_SZ=$(wc -c < "$DBG_LOG" 2>/dev/null)
-    case "$_DL_SZ" in
-        ''|*[!0-9]*) _DL_SZ=0 ;;
-    esac
-
-    if [ "$_DL_SZ" -gt 262144 ]; then
-        tail -n 200 "$DBG_LOG" > "$DBG_LOG.tmp" 2>/dev/null
-        mv -f "$DBG_LOG.tmp" "$DBG_LOG" 2>/dev/null
-    fi
-}
-
-# ─── Commands ──────────────────────────────────────────────────────────
 
 cmd_list() {
     ensure
@@ -383,9 +379,9 @@ cmd_set() {
         esac
     fi
 
-    dbg_log "SET raw1=[$_CS_RAW1] raw2=[$_CS_RAW2] pkg=[$_CS_PKG] mode=[$_CS_MODE]"
-
     ensure
+
+    dbg_log "SET raw1=[$_CS_RAW1] raw2=[$_CS_RAW2] pkg=[$_CS_PKG] mode=[$_CS_MODE]"
 
     if ! valid_pkg "$_CS_PKG"; then
         dbg_log "SET invalid_package pkg=[$_CS_PKG]"
@@ -422,63 +418,69 @@ cmd_set() {
 cmd_default() {
     _CDFT_MODE="$1"
 
-    dbg_log "DEFAULT mode=[$_CDFT_MODE]"
     ensure
+    dbg_log "DEFAULT mode=[$_CDFT_MODE]"
 
     case "$_CDFT_MODE" in
         basic|aggressive|persistent) ;;
         *)
+            dbg_log "DEFAULT invalid_mode mode=[$_CDFT_MODE]"
             printf '{"ok":false,"error":"invalid_mode"}\n'
             return 1
             ;;
     esac
 
     printf '%s\n' "$_CDFT_MODE" > "$MODE_FILE" 2>/dev/null || {
+        dbg_log "DEFAULT write_failed mode=[$_CDFT_MODE]"
         printf '{"ok":false,"error":"write_failed"}\n'
         return 1
     }
 
     chmod 600 "$MODE_FILE" 2>/dev/null
+    dbg_log "DEFAULT ok mode=[$_CDFT_MODE]"
     printf '{"ok":true}\n'
 }
 
 cmd_prop() {
     _CPROP_VAL="$1"
 
-    dbg_log "PROP val=[$_CPROP_VAL]"
     ensure
+    dbg_log "PROP val=[$_CPROP_VAL]"
 
     case "$_CPROP_VAL" in
         0|1) ;;
         *)
+            dbg_log "PROP invalid_value val=[$_CPROP_VAL]"
             printf '{"ok":false,"error":"invalid_value"}\n'
             return 1
             ;;
     esac
 
     printf '%s\n' "$_CPROP_VAL" > "$PROP_FILE" 2>/dev/null || {
+        dbg_log "PROP write_failed val=[$_CPROP_VAL]"
         printf '{"ok":false,"error":"write_failed"}\n'
         return 1
     }
 
     chmod 600 "$PROP_FILE" 2>/dev/null
+    dbg_log "PROP ok val=[$_CPROP_VAL]"
     printf '{"ok":true,"reboot_required":true}\n'
 }
 
 cmd_reset_all() {
-    dbg_log "RESET_ALL"
     ensure
+    dbg_log "RESET_ALL"
 
     : > "$APPS_FILE" 2>/dev/null || {
+        dbg_log "RESET_ALL write_failed"
         printf '{"ok":false,"error":"write_failed"}\n'
         return 1
     }
 
     chmod 600 "$APPS_FILE" 2>/dev/null
+    dbg_log "RESET_ALL ok"
     printf '{"ok":true}\n'
 }
-
-# ─── Dispatch with forced JSON ─────────────────────────────────────────
 
 _CMD="$1"
 shift 2>/dev/null
@@ -504,6 +506,7 @@ _FIRST_CHAR=$(printf '%.1s' "$_OUT" 2>/dev/null)
 if [ "$_FIRST_CHAR" = "{" ]; then
     printf '%s\n' "$_OUT"
 else
+    dbg_log "DISPATCH fallback cmd=[$_CMD] first_char=[$_FIRST_CHAR]"
     case "$_CMD" in
         list|diag)
             fallback_list_error "backend_failed"
