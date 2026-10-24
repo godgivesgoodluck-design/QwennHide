@@ -1,11 +1,12 @@
 #!/system/bin/sh
 # ═══════════════════════════════════════════════════════════════════════
-# QwennHide — api.sh v3.1.1
-# Backend WebUI / Action button.
+# QwennHide — api.sh v3.1.2
+# POSIX-safe backend untuk WebUI / Action button.
 #
 # Prinsip:
 #   - Selalu mencetak JSON valid ke stdout.
 #   - Semua stderr ditekan.
+#   - Tidak memakai local / bashism.
 #   - Jika gagal, tetap fallback JSON.
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -26,14 +27,14 @@ DENY_FILES="
 
 # ─── Root guard ────────────────────────────────────────────────────────
 if command -v id >/dev/null 2>&1; then
-    UID_VAL=$(id -u 2>/dev/null)
-    if [ -n "$UID_VAL" ] && [ "$UID_VAL" != "0" ]; then
+    _RG_UID=$(id -u 2>/dev/null)
+    if [ -n "$_RG_UID" ] && [ "$_RG_UID" != "0" ]; then
         printf '{"default_mode":"basic","prop_spoof":"0","apps":[],"ok":false,"error":"not_root"}\n'
         exit 0
     fi
 fi
 
-# ─── Helpers ───────────────────────────────────────────────────────────
+# ─── Validators ────────────────────────────────────────────────────────
 
 is_uint() {
     case "$1" in
@@ -56,6 +57,8 @@ valid_mode() {
     esac
 }
 
+# ─── Base helpers ──────────────────────────────────────────────────────
+
 ensure() {
     mkdir -p "$BASE" "$RUNTIME_DIR" 2>/dev/null
     chmod 700 "$BASE" "$RUNTIME_DIR" 2>/dev/null
@@ -68,25 +71,23 @@ ensure() {
 }
 
 get_first_line() {
-    local line=""
-    IFS= read -r line < "$1" 2>/dev/null || return 1
-    printf '%s' "$line"
+    _GFL_LINE=""
+    IFS= read -r _GFL_LINE < "$1" 2>/dev/null || return 1
+    printf '%s' "$_GFL_LINE" | tr -d '\r\n ' 2>/dev/null
 }
 
 get_default_mode() {
-    local m
-    m=$(get_first_line "$MODE_FILE" 2>/dev/null)
-    case "$m" in
-        basic|aggressive|persistent) printf '%s' "$m" ;;
+    _GDM=$(get_first_line "$MODE_FILE" 2>/dev/null)
+    case "$_GDM" in
+        basic|aggressive|persistent) printf '%s' "$_GDM" ;;
         *) printf 'basic' ;;
     esac
 }
 
 get_prop() {
-    local p
-    p=$(get_first_line "$PROP_FILE" 2>/dev/null)
-    case "$p" in
-        0|1) printf '%s' "$p" ;;
+    _GP=$(get_first_line "$PROP_FILE" 2>/dev/null)
+    case "$_GP" in
+        0|1) printf '%s' "$_GP" ;;
         *) printf '0' ;;
     esac
 }
@@ -104,15 +105,15 @@ find_magisk() {
         return
     fi
 
-    for p in \
+    for _FM_P in \
         /data/adb/magisk/magisk \
         /sbin/magisk \
         /debug_ramdisk/magisk \
         /data/adb/magisk/magisk64 \
         /data/adb/magisk/magisk32
     do
-        if [ -x "$p" ]; then
-            printf '%s' "$p"
+        if [ -x "$_FM_P" ]; then
+            printf '%s' "$_FM_P"
             return
         fi
     done
@@ -142,38 +143,38 @@ normalize_pkgs() {
 
 get_denylist_packages() {
     {
-        m=$(find_magisk)
-        if [ -n "$m" ]; then
-            "$m" --denylist ls 2>/dev/null | normalize_pkgs
+        _GDP_MAGISK=$(find_magisk)
+        if [ -n "$_GDP_MAGISK" ]; then
+            "$_GDP_MAGISK" --denylist ls 2>/dev/null | normalize_pkgs
         fi
 
-        for f in $DENY_FILES "$BASE/umount_list"; do
-            if [ -r "$f" ]; then
-                normalize_pkgs < "$f"
+        for _GDP_F in $DENY_FILES "$BASE/umount_list"; do
+            if [ -r "$_GDP_F" ]; then
+                normalize_pkgs < "$_GDP_F"
             fi
         done
-    } | awk '!seen[$0]++' 2>/dev/null
+    } | sort -u 2>/dev/null
 }
 
 is_pid_for_pkg() {
-    pid="$1"
-    pkg="$2"
+    _IPFP_PID="$1"
+    _IPFP_PKG="$2"
 
-    is_uint "$pid" || return 1
-    [ "$pid" -gt 0 ] || return 1
-    [ -d "/proc/$pid" ] || return 1
+    is_uint "$_IPFP_PID" || return 1
+    [ "$_IPFP_PID" -gt 0 ] || return 1
+    [ -d "/proc/$_IPFP_PID" ] || return 1
 
-    if [ -r "/proc/$pid/cmdline" ]; then
-        first=$(tr '\0' '\n' < "/proc/$pid/cmdline" 2>/dev/null | head -n 1 2>/dev/null)
-        base=${first%%:*}
-        [ "$base" = "$pkg" ] && return 0
+    if [ -r "/proc/$_IPFP_PID/cmdline" ]; then
+        _IPFP_FIRST=$(tr '\0' '\n' < "/proc/$_IPFP_PID/cmdline" 2>/dev/null | head -n 1 2>/dev/null)
+        _IPFP_BASE=${_IPFP_FIRST%%:*}
+        [ "$_IPFP_BASE" = "$_IPFP_PKG" ] && return 0
     fi
 
-    if [ -r "/proc/$pid/comm" ]; then
-        first=""
-        IFS= read -r first < "/proc/$pid/comm" 2>/dev/null
-        base=${first%%:*}
-        [ "$base" = "$pkg" ] && return 0
+    if [ -r "/proc/$_IPFP_PID/comm" ]; then
+        _IPFP_FIRST=""
+        IFS= read -r _IPFP_FIRST < "/proc/$_IPFP_PID/comm" 2>/dev/null
+        _IPFP_BASE=${_IPFP_FIRST%%:*}
+        [ "$_IPFP_BASE" = "$_IPFP_PKG" ] && return 0
     fi
 
     return 1
@@ -201,74 +202,78 @@ fallback_ok_error() {
 cmd_list() {
     ensure
 
-    default=$(get_default_mode)
-    prop=$(get_prop)
+    _CL_DEFAULT=$(get_default_mode)
+    _CL_PROP=$(get_prop)
 
     get_denylist_packages > "$DENY_TMP" 2>/dev/null || : > "$DENY_TMP" 2>/dev/null
 
-    printf '{"default_mode":"%s","prop_spoof":"%s","apps":[' "$default" "$prop"
+    printf '{"default_mode":"%s","prop_spoof":"%s","apps":[' "$_CL_DEFAULT" "$_CL_PROP"
 
-    first=1
+    _CL_FIRST=1
+
     if [ -r "$DENY_TMP" ]; then
-        while IFS= read -r pkg; do
-            [ -z "$pkg" ] && continue
-            valid_pkg "$pkg" || continue
+        while IFS= read -r _CL_PKG; do
+            [ -z "$_CL_PKG" ] && continue
+            valid_pkg "$_CL_PKG" || continue
 
-            override=$(get_app_override "$pkg")
-            if [ -n "$override" ]; then
-                mode="$override"
-                overridden=true
+            _CL_OVERRIDE=$(get_app_override "$_CL_PKG")
+
+            if [ -n "$_CL_OVERRIDE" ]; then
+                _CL_MODE="$_CL_OVERRIDE"
+                _CL_OVERRIDDEN=true
             else
-                mode="$default"
-                overridden=false
+                _CL_MODE="$_CL_DEFAULT"
+                _CL_OVERRIDDEN=false
             fi
 
-            rt_file="$RUNTIME_DIR/$pkg"
-            rt_running=false
-            rt_mode=""
-            rt_pid=0
-            rt_age=0
+            _CL_RT_FILE="$RUNTIME_DIR/$_CL_PKG"
+            _CL_RT_RUNNING=false
+            _CL_RT_MODE=""
+            _CL_RT_PID=0
+            _CL_RT_AGE=0
 
-            if [ -r "$rt_file" ]; then
-                rpid=""
-                raction=""
-                rts=""
-                IFS='|' read -r rpid raction rts < "$rt_file" 2>/dev/null
+            if [ -r "$_CL_RT_FILE" ]; then
+                _CL_RPID=""
+                _CL_RACTION=""
+                _CL_RTS=""
 
-                is_uint "$rpid" || rpid=0
-                is_uint "$raction" || raction=0
-                is_uint "$rts" || rts=0
+                IFS='|' read -r _CL_RPID _CL_RACTION _CL_RTS < "$_CL_RT_FILE" 2>/dev/null
 
-                now=$(date +%s 2>/dev/null)
-                is_uint "$now" || now=0
+                is_uint "$_CL_RPID" || _CL_RPID=0
+                is_uint "$_CL_RACTION" || _CL_RACTION=0
+                is_uint "$_CL_RTS" || _CL_RTS=0
 
-                if [ "$rts" -gt 0 ] && [ "$now" -gt 0 ]; then
-                    rt_age=$((now - rts))
-                    [ "$rt_age" -lt 0 ] && rt_age=0
+                _CL_NOW=$(date +%s 2>/dev/null)
+                is_uint "$_CL_NOW" || _CL_NOW=0
+
+                if [ "$_CL_RTS" -gt 0 ] && [ "$_CL_NOW" -gt 0 ]; then
+                    _CL_RT_AGE=$((_CL_NOW - _CL_RTS))
+                    [ "$_CL_RT_AGE" -lt 0 ] && _CL_RT_AGE=0
                 fi
 
-                rt_mode=$(action_to_mode "$raction")
+                _CL_RT_MODE=$(action_to_mode "$_CL_RACTION")
 
-                if is_pid_for_pkg "$rpid" "$pkg"; then
-                    rt_running=true
-                    rt_pid=$rpid
+                if is_pid_for_pkg "$_CL_RPID" "$_CL_PKG"; then
+                    _CL_RT_RUNNING=true
+                    _CL_RT_PID="$_CL_RPID"
                 else
-                    rt_running=false
-                    rt_pid=0
+                    _CL_RT_RUNNING=false
+                    _CL_RT_PID=0
                 fi
             fi
 
-            [ $first -eq 0 ] && printf ','
-            printf '{"pkg":"%s","mode":"%s","overridden":%s,"runtime_running":%s,"runtime_mode":"%s","runtime_pid":%s,"runtime_age":%s}' \
-                "$pkg" \
-                "$mode" \
-                "$overridden" \
-                "$rt_running" \
-                "$rt_mode" \
-                "$rt_pid" \
-                "$rt_age"
+            [ "$_CL_FIRST" -eq 0 ] && printf ','
 
-            first=0
+            printf '{"pkg":"%s","mode":"%s","overridden":%s,"runtime_running":%s,"runtime_mode":"%s","runtime_pid":%s,"runtime_age":%s}' \
+                "$_CL_PKG" \
+                "$_CL_MODE" \
+                "$_CL_OVERRIDDEN" \
+                "$_CL_RT_RUNNING" \
+                "$_CL_RT_MODE" \
+                "$_CL_RT_PID" \
+                "$_CL_RT_AGE"
+
+            _CL_FIRST=0
         done < "$DENY_TMP"
     fi
 
@@ -279,58 +284,62 @@ cmd_list() {
 cmd_diag() {
     ensure
 
-    m=$(find_magisk)
-    if [ -n "$m" ]; then
-        magisk_found=true
+    _CD_M=$(find_magisk)
+
+    if [ -n "$_CD_M" ]; then
+        _CD_MAGISK_FOUND=true
     else
-        magisk_found=false
+        _CD_MAGISK_FOUND=false
     fi
 
     get_denylist_packages > "$DENY_TMP" 2>/dev/null || : > "$DENY_TMP" 2>/dev/null
 
-    count=0
+    _CD_COUNT=0
     if [ -r "$DENY_TMP" ]; then
-        while IFS= read -r pkg; do
-            [ -z "$pkg" ] && continue
-            count=$((count + 1))
+        while IFS= read -r _CD_PKG; do
+            [ -z "$_CD_PKG" ] && continue
+            _CD_COUNT=$((_CD_COUNT + 1))
         done < "$DENY_TMP"
     fi
 
-    rt_count=0
+    _CD_RT_COUNT=0
     if [ -d "$RUNTIME_DIR" ]; then
-        for f in "$RUNTIME_DIR"/*; do
-            [ -f "$f" ] && rt_count=$((rt_count + 1))
+        for _CD_RT_F in "$RUNTIME_DIR"/*; do
+            [ -f "$_CD_RT_F" ] && _CD_RT_COUNT=$((_CD_RT_COUNT + 1))
         done
     fi
 
     printf '{"magisk_found":%s,"magisk_bin":"%s","denylist_count":%s,"runtime_count":%s,"files":{' \
-        "$magisk_found" \
-        "$m" \
-        "$count" \
-        "$rt_count"
+        "$_CD_MAGISK_FOUND" \
+        "$_CD_M" \
+        "$_CD_COUNT" \
+        "$_CD_RT_COUNT"
 
-    first=1
-    for f in $DENY_FILES "$BASE/umount_list"; do
-        [ $first -eq 0 ] && printf ','
-        if [ -r "$f" ]; then
-            readable=true
+    _CD_FIRST=1
+    for _CD_F in $DENY_FILES "$BASE/umount_list"; do
+        [ "$_CD_FIRST" -eq 0 ] && printf ','
+
+        if [ -r "$_CD_F" ]; then
+            _CD_READABLE=true
         else
-            readable=false
+            _CD_READABLE=false
         fi
-        printf '"%s":%s' "$f" "$readable"
-        first=0
+
+        printf '"%s":%s' "$_CD_F" "$_CD_READABLE"
+        _CD_FIRST=0
     done
 
     printf '},"packages":['
 
-    first=1
+    _CD_FIRST=1
     if [ -r "$DENY_TMP" ]; then
-        while IFS= read -r pkg; do
-            [ -z "$pkg" ] && continue
-            valid_pkg "$pkg" || continue
-            [ $first -eq 0 ] && printf ','
-            printf '"%s"' "$pkg"
-            first=0
+        while IFS= read -r _CD_PKG; do
+            [ -z "$_CD_PKG" ] && continue
+            valid_pkg "$_CD_PKG" || continue
+
+            [ "$_CD_FIRST" -eq 0 ] && printf ','
+            printf '"%s"' "$_CD_PKG"
+            _CD_FIRST=0
         done < "$DENY_TMP"
     fi
 
@@ -339,28 +348,30 @@ cmd_diag() {
 }
 
 cmd_set() {
-    pkg="$1"
-    mode="$2"
+    _CS_PKG="$1"
+    _CS_MODE="$2"
+
     ensure
 
-    valid_pkg "$pkg" || {
+    valid_pkg "$_CS_PKG" || {
         printf '{"ok":false,"error":"invalid_package"}\n'
         return 1
     }
 
-    valid_mode "$mode" || {
+    valid_mode "$_CS_MODE" || {
         printf '{"ok":false,"error":"invalid_mode"}\n'
         return 1
     }
 
-    tmp="$APPS_FILE.tmp"
-    awk -F'|' -v p="$pkg" '$1 != p' "$APPS_FILE" > "$tmp" 2>/dev/null || : > "$tmp" 2>/dev/null
+    _CS_TMP="$APPS_FILE.tmp"
 
-    if [ "$mode" != "default" ]; then
-        printf '%s|%s\n' "$pkg" "$mode" >> "$tmp" 2>/dev/null
+    awk -F'|' -v p="$_CS_PKG" '$1 != p' "$APPS_FILE" > "$_CS_TMP" 2>/dev/null || : > "$_CS_TMP" 2>/dev/null
+
+    if [ "$_CS_MODE" != "default" ]; then
+        printf '%s|%s\n' "$_CS_PKG" "$_CS_MODE" >> "$_CS_TMP" 2>/dev/null
     fi
 
-    mv -f "$tmp" "$APPS_FILE" 2>/dev/null || {
+    mv -f "$_CS_TMP" "$APPS_FILE" 2>/dev/null || {
         printf '{"ok":false,"error":"write_failed"}\n'
         return 1
     }
@@ -370,10 +381,11 @@ cmd_set() {
 }
 
 cmd_default() {
-    mode="$1"
+    _CDFT_MODE="$1"
+
     ensure
 
-    case "$mode" in
+    case "$_CDFT_MODE" in
         basic|aggressive|persistent) ;;
         *)
             printf '{"ok":false,"error":"invalid_mode"}\n'
@@ -381,7 +393,7 @@ cmd_default() {
             ;;
     esac
 
-    printf '%s\n' "$mode" > "$MODE_FILE" 2>/dev/null || {
+    printf '%s\n' "$_CDFT_MODE" > "$MODE_FILE" 2>/dev/null || {
         printf '{"ok":false,"error":"write_failed"}\n'
         return 1
     }
@@ -391,10 +403,11 @@ cmd_default() {
 }
 
 cmd_prop() {
-    val="$1"
+    _CPROP_VAL="$1"
+
     ensure
 
-    case "$val" in
+    case "$_CPROP_VAL" in
         0|1) ;;
         *)
             printf '{"ok":false,"error":"invalid_value"}\n'
@@ -402,7 +415,7 @@ cmd_prop() {
             ;;
     esac
 
-    printf '%s\n' "$val" > "$PROP_FILE" 2>/dev/null || {
+    printf '%s\n' "$_CPROP_VAL" > "$PROP_FILE" 2>/dev/null || {
         printf '{"ok":false,"error":"write_failed"}\n'
         return 1
     }
@@ -413,6 +426,7 @@ cmd_prop() {
 
 cmd_reset_all() {
     ensure
+
     : > "$APPS_FILE" 2>/dev/null || {
         printf '{"ok":false,"error":"write_failed"}\n'
         return 1
@@ -424,35 +438,36 @@ cmd_reset_all() {
 
 # ─── Dispatch with forced JSON ─────────────────────────────────────────
 
-cmd="$1"
+_CMD="$1"
 shift 2>/dev/null
 
-out=$(
-    case "$cmd" in
-        list)      cmd_list ;;
-        diag)      cmd_diag ;;
-        set)       cmd_set "$@" ;;
-        default)   cmd_default "$@" ;;
-        prop)      cmd_prop "$@" ;;
-        reset-all) cmd_reset_all ;;
-        *)
-            printf '{"ok":false,"error":"usage: api.sh list|diag|set|default|prop|reset-all"}\n'
-            ;;
-    esac
-)
-
-case "$out" in
-    \{*)
-        printf '%s\n' "$out"
-        ;;
-    *)
-        case "$cmd" in
-            list|diag)
-                fallback_list_error "backend_failed"
-                ;;
+_OUT=$(
+    {
+        case "$_CMD" in
+            list)      cmd_list ;;
+            diag)      cmd_diag ;;
+            set)       cmd_set "$@" ;;
+            default)   cmd_default "$@" ;;
+            prop)      cmd_prop "$@" ;;
+            reset-all) cmd_reset_all ;;
             *)
-                fallback_ok_error "backend_failed"
+                printf '{"ok":false,"error":"usage: api.sh list|diag|set|default|prop|reset-all"}\n'
                 ;;
         esac
-        ;;
-esac
+    } 2>/dev/null
+)
+
+_FIRST_CHAR=$(printf '%.1s' "$_OUT" 2>/dev/null)
+
+if [ "$_FIRST_CHAR" = "{" ]; then
+    printf '%s\n' "$_OUT"
+else
+    case "$_CMD" in
+        list|diag)
+            fallback_list_error "backend_failed"
+            ;;
+        *)
+            fallback_ok_error "backend_failed"
+            ;;
+    esac
+fi
