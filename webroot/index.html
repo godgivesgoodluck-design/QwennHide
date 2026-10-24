@@ -166,6 +166,7 @@
     .warn{color:var(--warn)}
     .ok{color:var(--ok)}
     .danger{color:var(--danger)}
+    .muted{color:var(--muted)}
 
     .error{
         color:var(--danger);
@@ -195,8 +196,10 @@
 
 <h1>QwennHide</h1>
 <div class="sub">
-    WebUI v3.1.3 — per-app colon payload, api debug log, fingerprint normalization.
+    WebUI v3.1.4 — resilient bridge timeout, visible errors, per-app colon mode.
 </div>
+
+<div id="fatal" class="card hidden"></div>
 
 <div class="card">
     <div class="row">
@@ -231,7 +234,8 @@
         <button class="secondary" onclick="resetAllOverrides()">Reset override</button>
     </div>
     <div class="small" style="margin-top:8px">
-        Mode berjalan dicatat saat aplikasi di-launch oleh Zygisk. Jika aplikasi belum dibuka setelah install/reboot, statusnya akan tampil sebagai belum terdeteksi berjalan.
+        Jika loading berhenti sendiri dalam 8 detik, berarti bridge/command timeout.
+        Cek terminal: <code>sh /data/adb/modules/qwennhide/api.sh list</code>
     </div>
 </div>
 
@@ -241,23 +245,56 @@
 <div id="list" class="card">Loading...</div>
 
 <script>
-const API_SH = "/data/adb/modules/qwennhide/api.sh";
-const CMD = `/system/bin/sh ${API_SH}`;
+(function () {
+    window.__qhShowFatal = function (msg) {
+        var el = document.getElementById("fatal");
+        if (!el) return;
+        el.className = "card";
+        el.innerHTML =
+            "<b class='danger'>WebUI error</b>" +
+            "<div class='error'>" + String(msg || "").replace(/</g, "&lt;") + "</div>";
+    };
 
-let data = {
+    window.addEventListener("error", function (ev) {
+        var msg = "JS error: " + (ev && ev.message ? ev.message : "unknown");
+        if (ev && ev.filename) msg += "\nFile: " + ev.filename;
+        if (ev && ev.lineno) msg += ":" + ev.lineno;
+        if (ev && ev.colno) msg += ":" + ev.colno;
+        window.__qhShowFatal(msg);
+    });
+
+    window.addEventListener("unhandledrejection", function (ev) {
+        var r = ev && ev.reason ? ev.reason : "unknown";
+        var msg = "Promise error: ";
+        if (typeof r === "string") msg += r;
+        else if (r && r.message) msg += r.message;
+        else {
+            try { msg += JSON.stringify(r); } catch (e) { msg += String(r); }
+        }
+        window.__qhShowFatal(msg);
+    });
+})();
+</script>
+
+<script>
+var API_SH = "/data/adb/modules/qwennhide/api.sh";
+var CMD = "/system/bin/sh " + API_SH;
+
+var data = {
     default_mode: "basic",
     prop_spoof: "0",
     apps: []
 };
 
-let rowStatus = {};
-let rowTimers = {};
-let autoTimer = null;
-let pauseUntil = 0;
-let lastRaw = "";
+var rowStatus = {};
+var rowTimers = {};
+var autoTimer = null;
+var pauseUntil = 0;
+var lastRaw = "";
 
 function escapeHtml(s) {
-    return String(s ?? "")
+    if (s === undefined || s === null) s = "";
+    return String(s)
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
@@ -265,25 +302,33 @@ function escapeHtml(s) {
         .replace(/'/g, "&#39;");
 }
 
-function showStatus(msg, isError = false) {
-    const el = document.getElementById("status");
-    el.className = "card";
-    el.innerHTML = isError
-        ? `<div class="error">${escapeHtml(msg)}</div>`
-        : `<div class="small">${escapeHtml(msg)}</div>`;
+function errMsg(e) {
+    if (!e) return "unknown error";
+    if (typeof e === "string") return e;
+    if (e.message) return String(e.message);
+    try { return JSON.stringify(e); } catch (x) { return String(e); }
+}
 
-    setTimeout(() => {
+function showStatus(msg, isError) {
+    var el = document.getElementById("status");
+    el.className = "card";
+    if (isError) {
+        el.innerHTML = "<div class='error'>" + escapeHtml(msg) + "</div>";
+    } else {
+        el.innerHTML = "<div class='small'>" + escapeHtml(msg) + "</div>";
+    }
+
+    setTimeout(function () {
         el.className = "card hidden";
     }, 6000);
 }
 
 function showRaw(title, txt) {
-    const el = document.getElementById("raw");
+    var el = document.getElementById("raw");
     el.className = "card";
-    el.innerHTML = `
-        <b>${escapeHtml(title)}</b>
-        <div class="mono">${escapeHtml(String(txt ?? "").slice(0, 6000))}</div>
-    `;
+    el.innerHTML =
+        "<b>" + escapeHtml(title) + "</b>" +
+        "<div class='mono'>" + escapeHtml(String(txt || "").slice(0, 6000)) + "</div>";
 }
 
 function hideRaw() {
@@ -295,45 +340,51 @@ function hideDiag() {
 }
 
 function setRowStatus(pkg, state, msg) {
-    rowStatus[pkg] = { state, msg };
+    rowStatus[pkg] = { state: state, msg: msg };
 }
 
 function scheduleClear(pkg, delay) {
     if (rowTimers[pkg]) clearTimeout(rowTimers[pkg]);
-    rowTimers[pkg] = setTimeout(() => {
+    rowTimers[pkg] = setTimeout(function () {
         delete rowStatus[pkg];
         renderApps();
     }, delay);
 }
 
 function hasSaving() {
-    return Object.values(rowStatus).some(s => s && s.state === "saving");
+    var keys = Object.keys(rowStatus);
+    for (var i = 0; i < keys.length; i++) {
+        var s = rowStatus[keys[i]];
+        if (s && s.state === "saving") return true;
+    }
+    return false;
 }
 
-function pauseAuto(ms = 15000) {
-    pauseUntil = Date.now() + ms;
+function pauseAuto(ms) {
+    pauseUntil = Date.now() + (ms || 15000);
 }
 
 function decodeBytes(bytes) {
     try {
         return new TextDecoder().decode(bytes);
-    } catch (_) {
+    } catch (e) {
         return "";
     }
 }
 
 function looksLikeJson(s) {
-    const t = String(s ?? "").trim();
+    var t = String(s === undefined || s === null ? "" : s).trim();
     if (!t) return false;
-    if (t.startsWith("{")) return true;
-    const a = t.indexOf("{");
-    const b = t.lastIndexOf("}");
+    if (t.charAt(0) === "{") return true;
+    var a = t.indexOf("{");
+    var b = t.lastIndexOf("}");
     return a !== -1 && b !== -1 && b > a;
 }
 
-function toText(r, depth = 0) {
+function toText(r, depth) {
+    if (depth === undefined) depth = 0;
     if (depth > 4) return "";
-    if (r == null) return "";
+    if (r === undefined || r === null) return "";
     if (typeof r === "string") return r;
     if (typeof r === "number" || typeof r === "boolean") return String(r);
 
@@ -345,35 +396,38 @@ function toText(r, depth = 0) {
         return decodeBytes(r);
     }
 
-    if (Array.isArray(r)) {
-        return r.map(x => toText(x, depth + 1)).filter(Boolean).join("\n");
+    if (Object.prototype.toString.call(r) === "[object Array]") {
+        var parts = [];
+        for (var i = 0; i < r.length; i++) {
+            var v = toText(r[i], depth + 1);
+            if (v) parts.push(v);
+        }
+        return parts.join("\n");
     }
 
     if (typeof r === "object") {
-        const directKeys = ["stdout", "output", "result", "data", "text", "value"];
-        for (const k of directKeys) {
-            if (Object.prototype.hasOwnProperty.call(r, k)) {
-                const v = toText(r[k], depth + 1);
-                if (v) return v;
+        var directKeys = ["stdout", "output", "result", "data", "text", "value"];
+        for (var k = 0; k < directKeys.length; k++) {
+            var key = directKeys[k];
+            if (Object.prototype.hasOwnProperty.call(r, key)) {
+                var vv = toText(r[key], depth + 1);
+                if (vv) return vv;
             }
         }
 
         if (Object.prototype.hasOwnProperty.call(r, "stdout") ||
             Object.prototype.hasOwnProperty.call(r, "stderr")) {
-            const so = toText(r.stdout, depth + 1);
-            const se = toText(r.stderr, depth + 1);
-
+            var so = toText(r.stdout, depth + 1);
+            var se = toText(r.stderr, depth + 1);
             if (looksLikeJson(so)) return so;
             if (so) return so;
             if (se) return se;
         }
 
-        if (
-            Object.prototype.hasOwnProperty.call(r, "apps") ||
+        if (Object.prototype.hasOwnProperty.call(r, "apps") ||
             Object.prototype.hasOwnProperty.call(r, "default_mode") ||
             Object.prototype.hasOwnProperty.call(r, "ok") ||
-            Object.prototype.hasOwnProperty.call(r, "magisk_found")
-        ) {
+            Object.prototype.hasOwnProperty.call(r, "magisk_found")) {
             return JSON.stringify(r);
         }
 
@@ -383,8 +437,8 @@ function toText(r, depth = 0) {
     return String(r);
 }
 
-async function shell(cmd) {
-    const bridges = [
+function shell(cmd) {
+    var bridges = [
         window.ksu,
         window.KSU,
         window.kernelsu,
@@ -392,55 +446,89 @@ async function shell(cmd) {
         window.webui
     ];
 
-    const errors = [];
+    var errors = [];
 
-    for (const b of bridges) {
-        if (!b) continue;
-
-        try {
-            if (typeof b.exec === "function") {
-                const raw = await b.exec(cmd);
-                const txt = toText(raw);
-                if (txt) {
-                    lastRaw = txt;
-                    return txt;
-                }
+    function tryBridge(b, fnName) {
+        return new Promise(function (resolve, reject) {
+            if (!b || typeof b[fnName] !== "function") {
+                reject(new Error(fnName + " unavailable"));
+                return;
             }
-        } catch (e) {
-            errors.push("exec: " + String(e?.message || e));
-        }
 
-        try {
-            if (typeof b.shell === "function") {
-                const raw = await b.shell(cmd);
-                const txt = toText(raw);
-                if (txt) {
-                    lastRaw = txt;
-                    return txt;
-                }
+            try {
+                var p = b[fnName](cmd);
+                Promise.resolve(p).then(function (raw) {
+                    var txt = toText(raw);
+                    if (txt) {
+                        lastRaw = txt;
+                        resolve(txt);
+                    } else {
+                        reject(new Error(fnName + " returned empty"));
+                    }
+                }, function (e) {
+                    reject(new Error(fnName + ": " + errMsg(e)));
+                });
+            } catch (e) {
+                reject(new Error(fnName + " throw: " + errMsg(e)));
             }
-        } catch (e) {
-            errors.push("shell: " + String(e?.message || e));
-        }
+        });
     }
 
-    const msg =
-        "KSU WebUI bridge tidak tersedia atau gagal menjalankan command.\n" +
-        "Coba jalankan manual di terminal root:\n\n" +
-        CMD + " list\n\n" +
-        "Error bridge:\n" +
-        (errors.join("\n") || "(tidak ada error tambahan)");
+    return bridges.reduce(function (chain, b) {
+        return chain.catch(function (e1) {
+            errors.push(errMsg(e1));
+            return tryBridge(b, "exec").catch(function (e2) {
+                errors.push(errMsg(e2));
+                return tryBridge(b, "shell");
+            });
+        });
+    }, Promise.reject(new Error("start")))
+    .catch(function (eLast) {
+        errors.push(errMsg(eLast));
+        var msg =
+            "KSU WebUI bridge tidak tersedia atau gagal menjalankan command.\n" +
+            "Coba jalankan manual di terminal root:\n\n" +
+            CMD + " list\n\n" +
+            "Error bridge:\n" +
+            (errors.join("\n") || "(tidak ada error tambahan)");
+        lastRaw = msg;
+        throw new Error(msg);
+    });
+}
 
-    lastRaw = msg;
-    throw new Error(msg);
+function shellWithTimeout(cmd, ms) {
+    return new Promise(function (resolve, reject) {
+        var done = false;
+
+        var timer = setTimeout(function () {
+            if (!done) {
+                done = true;
+                reject(new Error("Timeout " + ms + "ms menjalankan bridge: " + cmd));
+            }
+        }, ms);
+
+        shell(cmd).then(function (out) {
+            if (!done) {
+                done = true;
+                clearTimeout(timer);
+                resolve(out);
+            }
+        }, function (err) {
+            if (!done) {
+                done = true;
+                clearTimeout(timer);
+                reject(err);
+            }
+        });
+    });
 }
 
 function parseJSON(t) {
     if (t && typeof t === "object") return t;
 
-    const text = String(t ?? lastRaw ?? "");
-    const s = text.indexOf("{");
-    const e = text.lastIndexOf("}");
+    var text = String(t === undefined || t === null ? lastRaw : t);
+    var s = text.indexOf("{");
+    var e = text.lastIndexOf("}");
 
     if (s === -1 || e === -1 || e < s) {
         throw new Error("Response bukan JSON. Raw: " + text.slice(0, 800));
@@ -449,29 +537,24 @@ function parseJSON(t) {
     try {
         return JSON.parse(text.slice(s, e + 1));
     } catch (err) {
-        throw new Error("JSON tidak valid: " + String(err?.message || err) + "\nRaw: " + text.slice(0, 800));
+        throw new Error("JSON tidak valid: " + errMsg(err) + "\nRaw: " + text.slice(0, 800));
     }
 }
 
-async function runApi(cmd) {
-    const out = await shell(cmd);
+function runApi(cmd) {
+    return shellWithTimeout(cmd, 8000).then(function (out) {
+        if (!out || !String(out).trim()) {
+            throw new Error("Respons kosong dari api.sh");
+        }
 
-    if (!out || !String(out).trim()) {
-        throw new Error("Respons kosong dari api.sh");
-    }
+        var obj = parseJSON(out);
 
-    let obj;
-    try {
-        obj = parseJSON(out);
-    } catch (err) {
-        throw new Error(String(err?.message || err));
-    }
+        if (obj && obj.ok === false) {
+            throw new Error(obj.error || "Gagal tanpa detail");
+        }
 
-    if (obj && obj.ok === false) {
-        throw new Error(obj.error || "Gagal tanpa detail");
-    }
-
-    return obj || {};
+        return obj || {};
+    });
 }
 
 function validPkg(p) {
@@ -479,19 +562,20 @@ function validPkg(p) {
 }
 
 function cap(s) {
-    return String(s || "").charAt(0).toUpperCase() + String(s || "").slice(1);
+    s = String(s || "");
+    return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 function formatAge(seconds) {
-    const s = Number(seconds || 0);
-    if (s < 60) return `${s} dtk`;
-    if (s < 3600) return `${Math.floor(s / 60)} mnt`;
-    return `${Math.floor(s / 3600)} jam`;
+    var s = Number(seconds || 0);
+    if (s < 60) return s + " dtk";
+    if (s < 3600) return Math.floor(s / 60) + " mnt";
+    return Math.floor(s / 3600) + " jam";
 }
 
 function syncGlobalControls() {
-    const dm = document.getElementById("defaultMode");
-    const ps = document.getElementById("propSpoof");
+    var dm = document.getElementById("defaultMode");
+    var ps = document.getElementById("propSpoof");
 
     if (document.activeElement !== dm) {
         dm.value = data.default_mode || "basic";
@@ -505,128 +589,120 @@ function syncGlobalControls() {
 function normalizeData() {
     if (!data || typeof data !== "object") data = {};
     if (!data.default_mode) data.default_mode = "basic";
-    if (data.prop_spoof == null) data.prop_spoof = "0";
-    if (!Array.isArray(data.apps)) data.apps = [];
+    if (data.prop_spoof === undefined || data.prop_spoof === null) data.prop_spoof = "0";
+    if (!data.apps || Object.prototype.toString.call(data.apps) !== "[object Array]") data.apps = [];
 }
 
-async function loadData(clearStatus, manual = false) {
+function loadData(clearStatus, manual) {
     if (clearStatus) rowStatus = {};
 
-    const out = await shell(`${CMD} list`);
-    data = parseJSON(out);
-    normalizeData();
+    return runApi(CMD + " list").then(function (obj) {
+        data = obj;
+        normalizeData();
+        syncGlobalControls();
+        renderApps();
 
-    syncGlobalControls();
-    renderApps();
-
-    if (data.error) {
-        const msg = "Backend warning: " + data.error;
-        showStatus(msg, true);
-        showRaw("Backend error", out);
-        if (!manual) pauseAuto(60000);
-    }
-
-    if (manual && data.apps.length === 0) {
-        await loadDiag(true);
-    } else if (data.apps.length > 0) {
-        hideDiag();
-        if (!data.error) hideRaw();
-    }
+        if (manual && data.apps.length === 0) {
+            return loadDiag(true);
+        } else if (data.apps.length > 0) {
+            hideDiag();
+            hideRaw();
+        }
+    });
 }
 
-async function refresh() {
-    const list = document.getElementById("list");
+function refresh() {
+    var list = document.getElementById("list");
     pauseAuto();
 
-    try {
-        list.innerText = "Loading...";
-        await loadData(true, true);
-    } catch (e) {
-        const msg = String(e?.message || e);
-        list.innerHTML = `<div class="error">${escapeHtml(msg)}</div>`;
+    list.innerText = "Loading...";
+
+    return loadData(true, true).catch(function (e) {
+        var msg = errMsg(e);
+        list.innerHTML = "<div class='error'>" + escapeHtml(msg) + "</div>";
         showStatus("Refresh gagal: " + msg, true);
         showRaw("Refresh gagal", lastRaw || msg);
         pauseAuto(60000);
-    }
+    });
 }
 
-async function silentRefresh() {
+function silentRefresh() {
     if (document.visibilityState !== "visible") return;
     if (Date.now() < pauseUntil) return;
     if (hasSaving()) return;
 
-    try {
-        await loadData(false, false);
-    } catch (e) {
-        const msg = String(e?.message || e);
+    loadData(false, false).catch(function (e) {
+        var msg = errMsg(e);
         showStatus("Auto refresh gagal: " + msg, true);
         showRaw("Auto refresh gagal", lastRaw || msg);
         pauseAuto(60000);
-    }
+    });
 }
 
 function renderApps() {
-    const list = document.getElementById("list");
+    var list = document.getElementById("list");
     list.innerHTML = "";
 
-    const apps = data.apps || [];
+    var apps = data.apps || [];
 
     if (!apps.length) {
         list.innerHTML =
-            `<div class="small">Tidak ada aplikasi di DenyList yang terdeteksi.<br>` +
-            `Tambahkan aplikasi ke DenyList Magisk/NeoZygisk, lalu tekan Refresh.<br>` +
-            `Jika masih kosong, tekan <b>Debug Denylist</b> atau <b>Lihat Raw API</b>.</div>`;
+            "<div class='small'>Tidak ada aplikasi di DenyList yang terdeteksi.<br>" +
+            "Tambahkan aplikasi ke DenyList Magisk/NeoZygisk, lalu tekan Refresh.<br>" +
+            "Jika masih kosong, tekan <b>Debug Denylist</b> atau <b>Lihat Raw API</b>.</div>";
         return;
     }
 
-    for (const app of apps) {
-        const row = document.createElement("div");
+    for (var i = 0; i < apps.length; i++) {
+        var app = apps[i];
+
+        var row = document.createElement("div");
         row.className = "app";
 
-        const left = document.createElement("div");
+        var left = document.createElement("div");
         left.className = "app-left";
 
-        const pkg = document.createElement("div");
+        var pkg = document.createElement("div");
         pkg.className = "pkg";
         pkg.innerText = app.pkg;
         left.appendChild(pkg);
 
-        const runtime = document.createElement("div");
+        var runtime = document.createElement("div");
         runtime.className = "runtime-line";
 
         if (app.runtime_running) {
-            runtime.classList.add("running");
+            runtime.className += " running";
             runtime.innerText =
-                `▶ Sedang berjalan: ${cap(app.runtime_mode)} ` +
-                `(PID ${app.runtime_pid}, ${formatAge(app.runtime_age)} lalu)`;
+                "▶ Sedang berjalan: " + cap(app.runtime_mode) +
+                " (PID " + app.runtime_pid + ", " + formatAge(app.runtime_age) + " lalu)";
         } else if (app.runtime_mode) {
-            runtime.classList.add("stale");
+            runtime.className += " stale";
             runtime.innerText =
-                `⏸ Tidak terdeteksi berjalan. Terakhir: ${cap(app.runtime_mode)} ` +
-                `(${formatAge(app.runtime_age)} lalu)`;
+                "⏸ Tidak terdeteksi berjalan. Terakhir: " + cap(app.runtime_mode) +
+                " (" + formatAge(app.runtime_age) + " lalu)";
         } else {
-            runtime.classList.add("idle");
-            runtime.innerText = `⏸ Belum terdeteksi berjalan sejak module aktif.`;
+            runtime.className += " idle";
+            runtime.innerText = "⏸ Belum terdeteksi berjalan sejak module aktif.";
         }
 
         left.appendChild(runtime);
 
-        const configured = document.createElement("div");
+        var configured = document.createElement("div");
         configured.className = "configured-line";
 
         if (app.overridden) {
-            configured.innerText = `Mode tersimpan: ${cap(app.mode)} (override per-app)`;
+            configured.innerText = "Mode tersimpan: " + cap(app.mode) + " (override per-app)";
         } else {
-            configured.innerText = `Mode tersimpan: Default (${cap(data.default_mode)})`;
+            configured.innerText = "Mode tersimpan: Default (" + cap(data.default_mode) + ")";
         }
 
         left.appendChild(configured);
 
         if (app.overridden) {
-            const badges = document.createElement("div");
+            var badges = document.createElement("div");
             badges.className = "badges";
 
-            const b = document.createElement("span");
+            var b = document.createElement("span");
             b.className = "badge override";
             b.innerText = "OVERRIDE";
             badges.appendChild(b);
@@ -634,30 +710,33 @@ function renderApps() {
             left.appendChild(badges);
         }
 
-        const st = rowStatus[app.pkg];
+        var st = rowStatus[app.pkg];
         if (st) {
-            const s = document.createElement("div");
+            var s = document.createElement("div");
             s.className = "app-status " + st.state;
             s.innerText = st.msg;
             left.appendChild(s);
         }
 
-        const right = document.createElement("div");
+        var right = document.createElement("div");
         right.className = "app-right";
 
-        const sel = document.createElement("select");
+        var sel = document.createElement("select");
         sel.className = "app-mode";
-        sel.onchange = () => {
+        sel.setAttribute("data-pkg", app.pkg);
+        sel.onchange = function () {
             pauseAuto();
-            setAppMode(app.pkg, sel.value);
+            setAppMode(this.getAttribute("data-pkg"), this.value);
         };
 
-        for (const v of ["default", "basic", "aggressive", "persistent"]) {
-            const o = document.createElement("option");
+        var options = ["default", "basic", "aggressive", "persistent"];
+        for (var j = 0; j < options.length; j++) {
+            var v = options[j];
+            var o = document.createElement("option");
             o.value = v;
 
             if (v === "default") {
-                o.innerText = `Default (${data.default_mode})`;
+                o.innerText = "Default (" + data.default_mode + ")";
                 o.selected = !app.overridden;
             } else {
                 o.innerText = cap(v);
@@ -675,7 +754,7 @@ function renderApps() {
     }
 }
 
-async function setAppMode(pkg, mode) {
+function setAppMode(pkg, mode) {
     pauseAuto();
 
     if (!validPkg(pkg)) {
@@ -685,7 +764,7 @@ async function setAppMode(pkg, mode) {
         return;
     }
 
-    if (!["default", "basic", "aggressive", "persistent"].includes(mode)) {
+    if (mode !== "default" && mode !== "basic" && mode !== "aggressive" && mode !== "persistent") {
         setRowStatus(pkg, "error", "✗ Mode tidak valid");
         scheduleClear(pkg, 6000);
         renderApps();
@@ -695,9 +774,15 @@ async function setAppMode(pkg, mode) {
     setRowStatus(pkg, "saving", "Menyimpan…");
     renderApps();
 
-    await runApi(`${CMD} set ${pkg}:${mode}`);
+    runApi(CMD + " set " + pkg + ":" + mode).then(function () {
+        var app = null;
+        for (var i = 0; i < data.apps.length; i++) {
+            if (data.apps[i].pkg === pkg) {
+                app = data.apps[i];
+                break;
+            }
+        }
 
-        const app = (data.apps || []).find(a => a.pkg === pkg);
         if (app) {
             if (mode === "default") {
                 app.overridden = false;
@@ -710,183 +795,204 @@ async function setAppMode(pkg, mode) {
 
         setRowStatus(pkg, "ok", "✓ Mode diterapkan");
         scheduleClear(pkg, 4000);
-    } catch (e) {
-        setRowStatus(pkg, "error", "✗ Gagal: " + String(e?.message || e));
-        scheduleClear(pkg, 9000);
-        showRaw("Set mode gagal", lastRaw || String(e?.message || e));
-    }
-
-    renderApps();
-}
-
-async function setDefaultMode(mode) {
-    pauseAuto();
-
-    try {
-        await runApi(`${CMD} default ${mode}`);
-        data.default_mode = mode;
-        showStatus(`Default mode → ${mode}`);
         renderApps();
-    } catch (e) {
-        showStatus("Gagal mengubah default mode: " + String(e?.message || e), true);
-        showRaw("Default mode gagal", lastRaw || String(e?.message || e));
-    }
+    }).catch(function (e) {
+        var msg = errMsg(e);
+        setRowStatus(pkg, "error", "✗ Gagal: " + msg);
+        scheduleClear(pkg, 9000);
+        showRaw("Set mode gagal", lastRaw || msg);
+        renderApps();
+    });
 }
 
-async function setPropSpoof(v) {
+function setDefaultMode(mode) {
     pauseAuto();
 
-    try {
-        const obj = await runApi(`${CMD} prop ${v}`);
+    runApi(CMD + " default " + mode).then(function () {
+        data.default_mode = mode;
+        showStatus("Default mode → " + mode);
+        renderApps();
+    }).catch(function (e) {
+        var msg = errMsg(e);
+        showStatus("Gagal mengubah default mode: " + msg, true);
+        showRaw("Default mode gagal", lastRaw || msg);
+    });
+}
+
+function setPropSpoof(v) {
+    pauseAuto();
+
+    runApi(CMD + " prop " + v).then(function (obj) {
         data.prop_spoof = v;
 
-        if (obj.reboot_required) {
+        if (obj && obj.reboot_required) {
             showStatus("Prop spoofing diubah. REBOOT diperlukan.");
         } else {
             showStatus("Prop spoofing diubah.");
         }
-    } catch (e) {
-        showStatus("Gagal mengubah prop spoofing: " + String(e?.message || e), true);
-        showRaw("Prop spoofing gagal", lastRaw || String(e?.message || e));
-    }
+    }).catch(function (e) {
+        var msg = errMsg(e);
+        showStatus("Gagal mengubah prop spoofing: " + msg, true);
+        showRaw("Prop spoofing gagal", lastRaw || msg);
+    });
 }
 
-async function resetAllOverrides() {
+function resetAllOverrides() {
     pauseAuto();
 
     if (!confirm("Hapus semua override per-app?")) return;
 
-    try {
-        await runApi(`${CMD} reset-all`);
-        (data.apps || []).forEach(a => {
-            a.overridden = false;
-            a.mode = data.default_mode;
-        });
+    runApi(CMD + " reset-all").then(function () {
+        for (var i = 0; i < data.apps.length; i++) {
+            data.apps[i].overridden = false;
+            data.apps[i].mode = data.default_mode;
+        }
 
         rowStatus = {};
         showStatus("Semua override dihapus.");
         renderApps();
-    } catch (e) {
-        showStatus("Gagal reset override: " + String(e?.message || e), true);
-        showRaw("Reset override gagal", lastRaw || String(e?.message || e));
-    }
+    }).catch(function (e) {
+        var msg = errMsg(e);
+        showStatus("Gagal reset override: " + msg, true);
+        showRaw("Reset override gagal", lastRaw || msg);
+    });
 }
 
-async function viewRaw() {
+function viewRaw() {
     pauseAuto();
 
-    const el = document.getElementById("raw");
+    var el = document.getElementById("raw");
     el.className = "card";
-    el.innerHTML = `<div class="small">Mengambil raw response...</div>`;
+    el.innerHTML = "<div class='small'>Mengambil raw response...</div>";
 
-    try {
-        const out = await shell(`${CMD} list`);
+    shellWithTimeout(CMD + " list", 8000).then(function (out) {
         showRaw("Raw api.sh list", out);
-    } catch (e) {
-        showRaw("Raw error", String(e?.message || e));
-    }
+    }).catch(function (e) {
+        showRaw("Raw error", errMsg(e) + "\n\nLast raw:\n" + lastRaw);
+    });
 }
 
-async function loadDiag(auto = false) {
+function loadDiag(auto) {
     pauseAuto();
 
-    const el = document.getElementById("diag");
+    var el = document.getElementById("diag");
     el.className = "card";
-    el.innerHTML = `<div class="small">Mengambil diagnosis Denylist…</div>`;
+    el.innerHTML = "<div class='small'>Mengambil diagnosis Denylist…</div>";
 
-    try {
-        const out = await shell(`${CMD} diag`);
-        const d = parseJSON(out);
+    return runApi(CMD + " diag").then(function (d) {
         renderDiag(d, auto);
-    } catch (e) {
+    }).catch(function (e) {
+        var msg = errMsg(e);
         el.innerHTML =
-            `<b class="danger">Debug gagal</b>` +
-            `<div class="error">${escapeHtml(String(e?.message || e))}</div>`;
-        showRaw("Debug gagal", lastRaw || String(e?.message || e));
-    }
+            "<b class='danger'>Debug gagal</b>" +
+            "<div class='error'>" + escapeHtml(msg) + "</div>";
+        showRaw("Debug gagal", lastRaw || msg);
+    });
 }
 
 function renderDiag(d, auto) {
-    const el = document.getElementById("diag");
+    var el = document.getElementById("diag");
     el.className = "card";
 
-    const magiskFound = d.magisk_found === true || !!d.magisk_bin;
-    const magisk = d.magisk_bin || "";
-    const count = Number(d.denylist_count || 0);
-    const runtimeCount = Number(d.runtime_count || 0);
-    const files = d.files || {};
-    const packages = d.packages || [];
+    var magiskFound = d.magisk_found === true || !!d.magisk_bin;
+    var magisk = d.magisk_bin || "";
+    var count = Number(d.denylist_count || 0);
+    var runtimeCount = Number(d.runtime_count || 0);
+    var files = d.files || {};
+    var packages = d.packages || [];
 
-    let advice = "";
+    var advice = "";
 
-    if (!magiskFound && Object.values(files).every(v => v === false)) {
-        advice =
-            `<div class="warn">Tidak ditemukan sumber Denylist.` +
-            ` Jika Anda memakai KernelSU/APatch tanpa Magisk, tambahkan package manual ke:</div>` +
-            `<div class="mono">/data/adb/qwennhide/umount_list</div>`;
+    if (!magiskFound && Object.keys(files).length > 0) {
+        var allFalse = true;
+        for (var kk in files) {
+            if (Object.prototype.hasOwnProperty.call(files, kk) && files[kk] !== false) {
+                allFalse = false;
+                break;
+            }
+        }
+
+        if (allFalse) {
+            advice =
+                "<div class='warn'>Tidak ditemukan sumber Denylist." +
+                " Jika Anda memakai KernelSU/APatch tanpa Magisk, tambahkan package manual ke:</div>" +
+                "<div class='mono'>/data/adb/qwennhide/umount_list</div>";
+        }
     } else if (magiskFound && count === 0) {
         advice =
-            `<div class="warn">Command magisk ditemukan, tetapi hasil parsing Denylist kosong.` +
-            ` Bisa jadi format output tidak cocok atau DenyList memang belum diisi.</div>`;
+            "<div class='warn'>Command magisk ditemukan, tetapi hasil parsing Denylist kosong." +
+            " Bisa jadi format output tidak cocok atau DenyList memang belum diisi.</div>";
     } else if (count > 0 && packages.length === 0) {
-        advice = `<div class="warn">Data tidak konsisten: count > 0 tetapi packages kosong.</div>`;
+        advice = "<div class='warn'>Data tidak konsisten: count > 0 tetapi packages kosong.</div>";
     } else if (count > 0) {
         advice =
-            `<div class="ok">Denylist terdeteksi.` +
-            ` Jika WebUI tetap kosong, kemungkinan cache WebUI lama. Reinstall module atau clear cache manager.</div>`;
+            "<div class='ok'>Denylist terdeteksi." +
+            " Jika WebUI tetap kosong, kemungkinan cache WebUI lama. Reinstall module atau clear cache manager.</div>";
     }
 
-    const fileList = Object.entries(files)
-        .map(([p, ok]) => `${ok ? "✓" : "✗"} ${escapeHtml(p)}`)
-        .join("<br>") || `<span class="small">(tidak ada file sumber)</span>`;
+    var fileList = "";
+    var firstFile = true;
+    for (var fp in files) {
+        if (!Object.prototype.hasOwnProperty.call(files, fp)) continue;
+        if (!firstFile) fileList += "<br>";
+        fileList += (files[fp] ? "✓ " : "✗ ") + escapeHtml(fp);
+        firstFile = false;
+    }
+    if (!fileList) fileList = "<span class='small'>(tidak ada file sumber)</span>";
 
-    const pkgList = packages.length
-        ? packages.map(escapeHtml).join(", ")
-        : "(kosong)";
+    var pkgList = "(kosong)";
+    if (packages.length) {
+        var ps = [];
+        for (var pi = 0; pi < packages.length; pi++) ps.push(escapeHtml(packages[pi]));
+        pkgList = ps.join(", ");
+    }
 
-    el.innerHTML = `
-        <b>${auto ? "Auto-debug: Denylist kosong" : "Debug Denylist"}</b>
+    el.innerHTML =
+        "<b>" + (auto ? "Auto-debug: Denylist kosong" : "Debug Denylist") + "</b>" +
 
-        <div class="small" style="margin-top:8px">
-            <b>magisk binary:</b>
-            <span class="${magiskFound ? "ok" : "danger"}">${escapeHtml(magisk || "tidak ditemukan")}</span>
-        </div>
+        "<div class='small' style='margin-top:8px'>" +
+        "<b>magisk binary:</b> " +
+        "<span class='" + (magiskFound ? "ok" : "danger") + "'>" +
+        escapeHtml(magisk || "tidak ditemukan") +
+        "</span></div>" +
 
-        <div class="small">
-            <b>denylist terparse:</b>
-            <span class="${count > 0 ? "ok" : "warn"}">${count}</span>
-        </div>
+        "<div class='small'>" +
+        "<b>denylist terparse:</b> " +
+        "<span class='" + (count > 0 ? "ok" : "warn") + "'>" + count + "</span></div>" +
 
-        <div class="small">
-            <b>runtime state tercatat:</b>
-            <span class="${runtimeCount > 0 ? "ok" : "muted"}">${runtimeCount}</span>
-        </div>
+        "<div class='small'>" +
+        "<b>runtime state tercatat:</b> " +
+        "<span class='" + (runtimeCount > 0 ? "ok" : "muted") + "'>" + runtimeCount + "</span></div>" +
 
-        <div class="small" style="margin-top:8px"><b>File sumber:</b></div>
-        <div class="mono">${fileList}</div>
+        "<div class='small' style='margin-top:8px'><b>File sumber:</b></div>" +
+        "<div class='mono'>" + fileList + "</div>" +
 
-        <div class="small" style="margin-top:8px"><b>Package hasil parsing:</b></div>
-        <div class="mono">${pkgList}</div>
+        "<div class='small' style='margin-top:8px'><b>Package hasil parsing:</b></div>" +
+        "<div class='mono'>" + pkgList + "</div>" +
 
-        ${advice}
-    `;
+        advice;
 }
 
 function startAutoRefresh() {
     if (autoTimer) clearInterval(autoTimer);
-
-    autoTimer = setInterval(() => {
+    autoTimer = setInterval(function () {
         silentRefresh();
     }, 5000);
 }
 
-document.addEventListener("visibilitychange", () => {
+document.addEventListener("visibilitychange", function () {
     if (document.visibilityState === "visible") {
         silentRefresh();
     }
 });
 
-refresh().then(startAutoRefresh);
+try {
+    refresh().then(startAutoRefresh).catch(function (e) {
+        window.__qhShowFatal("Init gagal: " + errMsg(e));
+    });
+} catch (e) {
+    window.__qhShowFatal("Init throw: " + errMsg(e));
+}
 </script>
 
 </body>
