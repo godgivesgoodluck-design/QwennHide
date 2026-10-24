@@ -1,12 +1,13 @@
 // ═══════════════════════════════════════════════════════════════════════
-// QwennHide — jni/main.cpp (FINAL + WebUI per-app config)
+// QwennHide — jni/main.cpp (FINAL + Runtime State for WebUI)
 //
 // Modes:
 //   0 = Skip, 1 = Basic, 2 = Aggressive, 3 = Persistent
-// Config:
-//   /data/adb/qwennhide/mode        → default global
-//   /data/adb/qwennhide/apps.list   → override per-app (pkg|mode)
-//   /data/adb/qwennhide/prop_spoof  → dibaca service.sh, bukan di sini
+//
+// Runtime state:
+//   Companion menuliskan mode yang benar-benar dipakai ke:
+//   /data/adb/qwennhide/runtime/<package>
+//   Format: pid|action|timestamp
 // ═══════════════════════════════════════════════════════════════════════
 
 #include <cstdlib>
@@ -23,6 +24,9 @@
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <cstdio>
+#include <ctime>
+#include <cctype>
 
 #include "zygisk.hpp"
 
@@ -32,9 +36,10 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 
-#define DATADIR   "/data/adb/qwennhide"
-#define MODE_FILE DATADIR "/mode"
-#define APPS_FILE DATADIR "/apps.list"
+#define DATADIR     "/data/adb/qwennhide"
+#define MODE_FILE   DATADIR "/mode"
+#define APPS_FILE   DATADIR "/apps.list"
+#define RUNTIME_DIR DATADIR "/runtime"
 
 // ─── Paths ─────────────────────────────────────────────────────────────
 static const char *FD_CHECK_PATHS[] = {
@@ -67,6 +72,52 @@ static std::string readFirstLine(const char *path) {
     return "";
 }
 
+static std::string safeFileName(const std::string &s) {
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        if (std::isalnum(c) || c == '.' || c == '_') {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('_');
+        }
+    }
+    if (out.empty()) out = "unknown";
+    return out;
+}
+
+// ─── Runtime state ─────────────────────────────────────────────────────
+static void writeRuntimeState(const std::string &pkg, uint32_t pid, uint8_t action) {
+    mkdir(RUNTIME_DIR, 0700);
+
+    std::string file = std::string(RUNTIME_DIR) + "/" + safeFileName(pkg);
+    std::string tmp  = file + ".tmp";
+
+    FILE *f = fopen(tmp.c_str(), "w");
+    if (!f) {
+        LOGE("Failed to open runtime tmp: %s (%s)", tmp.c_str(), strerror(errno));
+        return;
+    }
+
+    fprintf(f, "%u|%u|%lld\n",
+            static_cast<unsigned>(pid),
+            static_cast<unsigned>(action),
+            static_cast<long long>(time(nullptr)));
+    fclose(f);
+
+    chmod(tmp.c_str(), 0600);
+
+    if (rename(tmp.c_str(), file.c_str()) != 0) {
+        LOGE("Failed to rename runtime state: %s (%s)", file.c_str(), strerror(errno));
+        unlink(tmp.c_str());
+    }
+}
+
+static void removeRuntimeState(const std::string &pkg) {
+    std::string file = std::string(RUNTIME_DIR) + "/" + safeFileName(pkg);
+    unlink(file.c_str());
+}
+
 // ─── Config readers ────────────────────────────────────────────────────
 static std::string getDefaultMode() {
     std::string m = readFirstLine(MODE_FILE);
@@ -77,18 +128,25 @@ static std::string getDefaultMode() {
 static std::string getAppMode(const std::string &pkg) {
     std::ifstream f(APPS_FILE);
     std::string result;
+
     if (f.is_open()) {
         std::string line;
         while (std::getline(f, line)) {
             line = trimStr(line);
             if (line.empty() || line[0] == '#') continue;
+
             size_t sep = line.find('|');
             if (sep == std::string::npos) continue;
+
             std::string key = trimStr(line.substr(0, sep));
             std::string val = trimStr(line.substr(sep + 1));
-            if (key == pkg) result = val; // entry terakhir menang
+
+            if (key == pkg) {
+                result = val; // entry terakhir menang
+            }
         }
     }
+
     if (!result.empty()) return result;
     return getDefaultMode();
 }
@@ -97,16 +155,21 @@ static std::string getAppMode(const std::string &pkg) {
 static void closeLeakedFds() {
     DIR *fd_dir = opendir("/proc/self/fd");
     if (!fd_dir) return;
+
     struct dirent *entry;
     while ((entry = readdir(fd_dir)) != nullptr) {
         if (entry->d_name[0] == '.') continue;
+
         int fd = atoi(entry->d_name);
         if (fd <= 2) continue;
+
         char link_path[64], target[512];
         snprintf(link_path, sizeof(link_path), "/proc/self/fd/%s", entry->d_name);
+
         ssize_t len = readlink(link_path, target, sizeof(target) - 1);
         if (len <= 0) continue;
         target[len] = '\0';
+
         for (int i = 0; FD_CHECK_PATHS[i]; i++) {
             if (strncmp(target, FD_CHECK_PATHS[i], strlen(FD_CHECK_PATHS[i])) == 0) {
                 close(fd);
@@ -115,23 +178,32 @@ static void closeLeakedFds() {
             }
         }
     }
+
     closedir(fd_dir);
 }
 
 static void manualUnmount() {
     std::ifstream mi("/proc/self/mountinfo");
     if (!mi.is_open()) return;
+
     std::vector<std::pair<int, std::string>> to_unmount;
     std::string line;
+
     while (std::getline(mi, line)) {
         std::istringstream ss(line);
         int mount_id, parent_id;
         std::string major_minor, root, mountpoint;
         ss >> mount_id >> parent_id >> major_minor >> root >> mountpoint;
+
         bool should_unmount = false;
+
         for (int i = 0; UNMOUNT_PATHS[i]; i++) {
-            if (mountpoint.find(UNMOUNT_PATHS[i]) == 0) { should_unmount = true; break; }
+            if (mountpoint.find(UNMOUNT_PATHS[i]) == 0) {
+                should_unmount = true;
+                break;
+            }
         }
+
         if (mountpoint.find("/dev/zygisk") == 0 ||
             mountpoint.find("/dev/neozygisk") == 0 ||
             mountpoint.find("/dev/zygisksu") == 0 ||
@@ -139,9 +211,14 @@ static void manualUnmount() {
             mountpoint.find("/data/adb/modules/zygisksu") == 0) {
             should_unmount = false;
         }
-        if (should_unmount) to_unmount.push_back({mount_id, mountpoint});
+
+        if (should_unmount) {
+            to_unmount.push_back({mount_id, mountpoint});
+        }
     }
+
     mi.close();
+
     for (auto it = to_unmount.rbegin(); it != to_unmount.rend(); ++it) {
         if (umount2(it->second.c_str(), MNT_DETACH) == 0) {
             LOGD("Manual unmount: %s", it->second.c_str());
@@ -151,18 +228,23 @@ static void manualUnmount() {
 
 static void cleanNeoZygiskTraces() {
     LOGD("Cleaning NeoZygisk traces");
+
     DIR *fd_dir = opendir("/proc/self/fd");
     if (fd_dir) {
         struct dirent *entry;
         while ((entry = readdir(fd_dir)) != nullptr) {
             if (entry->d_name[0] == '.') continue;
+
             int fd = atoi(entry->d_name);
             if (fd <= 2) continue;
+
             char link_path[64], target[512];
             snprintf(link_path, sizeof(link_path), "/proc/self/fd/%s", entry->d_name);
+
             ssize_t len = readlink(link_path, target, sizeof(target) - 1);
             if (len <= 0) continue;
             target[len] = '\0';
+
             for (int i = 0; NEOZYGISK_CLEANUP_PATHS[i]; i++) {
                 if (strncmp(target, NEOZYGISK_CLEANUP_PATHS[i],
                             strlen(NEOZYGISK_CLEANUP_PATHS[i])) == 0) {
@@ -172,18 +254,22 @@ static void cleanNeoZygiskTraces() {
                 }
             }
         }
+
         closedir(fd_dir);
     }
 
     std::ifstream mi("/proc/self/mountinfo");
     if (!mi.is_open()) return;
+
     std::vector<std::pair<int, std::string>> to_unmount;
     std::string line;
+
     while (std::getline(mi, line)) {
         std::istringstream ss(line);
         int mount_id, parent_id;
         std::string major_minor, root, mountpoint;
         ss >> mount_id >> parent_id >> major_minor >> root >> mountpoint;
+
         for (int i = 0; NEOZYGISK_CLEANUP_PATHS[i]; i++) {
             if (mountpoint.find(NEOZYGISK_CLEANUP_PATHS[i]) == 0) {
                 to_unmount.push_back({mount_id, mountpoint});
@@ -191,7 +277,9 @@ static void cleanNeoZygiskTraces() {
             }
         }
     }
+
     mi.close();
+
     for (auto it = to_unmount.rbegin(); it != to_unmount.rend(); ++it) {
         if (umount2(it->second.c_str(), MNT_DETACH) == 0) {
             LOGD("Unmounted NeoZygisk: %s", it->second.c_str());
@@ -207,9 +295,16 @@ static bool isInDenyList(const std::string &pkg) {
         while (fgets(buf, sizeof(buf), pipe)) {
             std::string entry(buf);
             if (!entry.empty() && entry.back() == '\n') entry.pop_back();
+
             size_t sep = entry.find('|');
-            std::string entry_pkg = (sep != std::string::npos) ? entry.substr(0, sep) : entry;
-            if (entry_pkg == pkg) { pclose(pipe); return true; }
+            std::string entry_pkg = (sep != std::string::npos)
+                                    ? entry.substr(0, sep)
+                                    : entry;
+
+            if (entry_pkg == pkg) {
+                pclose(pipe);
+                return true;
+            }
         }
         pclose(pipe);
     }
@@ -217,16 +312,28 @@ static bool isInDenyList(const std::string &pkg) {
     const char *neo_paths[] = {
         "/data/adb/modules/neozygisk/denylist",
         "/data/adb/modules/zygisksu/denylist",
+        "/data/adb/neozygisk/denylist",
+        "/data/adb/zygisksu/denylist",
+        "/data/adb/zygisknext/denylist",
         nullptr
     };
+
     for (int i = 0; neo_paths[i]; i++) {
         std::ifstream f(neo_paths[i]);
         if (!f.is_open()) continue;
+
         std::string line;
         while (std::getline(f, line)) {
             if (line.empty() || line[0] == '#') continue;
+
             size_t sep = line.find('|');
-            std::string p = (sep != std::string::npos) ? line.substr(0, sep) : line;
+            std::string p = (sep != std::string::npos)
+                            ? line.substr(0, sep)
+                            : line;
+
+            size_t colon = p.find(':');
+            if (colon != std::string::npos) p = p.substr(0, colon);
+
             if (p == pkg) return true;
         }
     }
@@ -236,9 +343,19 @@ static bool isInDenyList(const std::string &pkg) {
         std::string line;
         while (std::getline(custom, line)) {
             if (line.empty() || line[0] == '#') continue;
-            if (line == pkg) return true;
+
+            size_t sep = line.find('|');
+            std::string p = (sep != std::string::npos)
+                            ? line.substr(0, sep)
+                            : line;
+
+            size_t colon = p.find(':');
+            if (colon != std::string::npos) p = p.substr(0, colon);
+
+            if (p == pkg) return true;
         }
     }
+
     return false;
 }
 
@@ -246,12 +363,23 @@ static bool isInDenyList(const std::string &pkg) {
 static void companionHandler(int client_fd) {
     uint32_t len = 0;
     if (read(client_fd, &len, sizeof(len)) != sizeof(len) || len == 0 || len > 512) {
-        uint8_t resp = 0; write(client_fd, &resp, 1); return;
+        uint8_t resp = 0;
+        write(client_fd, &resp, 1);
+        return;
     }
 
     std::string pkgName(len, '\0');
     if (read(client_fd, &pkgName[0], len) != (ssize_t)len) {
-        uint8_t resp = 0; write(client_fd, &resp, 1); return;
+        uint8_t resp = 0;
+        write(client_fd, &resp, 1);
+        return;
+    }
+
+    uint32_t pid = 0;
+    if (read(client_fd, &pid, sizeof(pid)) != sizeof(pid)) {
+        uint8_t resp = 0;
+        write(client_fd, &resp, 1);
+        return;
     }
 
     bool in_denylist = isInDenyList(pkgName);
@@ -259,13 +387,23 @@ static void companionHandler(int client_fd) {
 
     uint8_t action = 0;
     if (in_denylist) {
-        if (app_mode.find("persistent") != std::string::npos) action = 3;
-        else if (app_mode.find("aggressive") != std::string::npos) action = 2;
-        else action = 1;
+        if (app_mode.find("persistent") != std::string::npos) {
+            action = 3;
+        } else if (app_mode.find("aggressive") != std::string::npos) {
+            action = 2;
+        } else {
+            action = 1;
+        }
     }
 
-    LOGI("Companion: [%s] denylist=%d app_mode=%s action=%d",
-         pkgName.c_str(), in_denylist, app_mode.c_str(), action);
+    if (action > 0) {
+        writeRuntimeState(pkgName, pid, action);
+    } else {
+        removeRuntimeState(pkgName);
+    }
+
+    LOGI("Companion: [%s] pid=%u denylist=%d app_mode=%s action=%d",
+         pkgName.c_str(), pid, in_denylist, app_mode.c_str(), action);
 
     write(client_fd, &action, 1);
 }
@@ -274,8 +412,9 @@ static void companionHandler(int client_fd) {
 class QwennHide : public zygisk::ModuleBase {
 public:
     void onLoad(zygisk::Api *api, JNIEnv *env) override {
-        this->api = api; this->env = env;
-        LOGI("QwennHide loaded (WebUI per-app config)");
+        this->api = api;
+        this->env = env;
+        LOGI("QwennHide loaded (runtime state enabled)");
     }
 
     void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
@@ -284,17 +423,20 @@ public:
 
         if (!args || !args->nice_name) {
             api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-            unloaded = true; return;
+            unloaded = true;
+            return;
         }
 
         const char *raw = env->GetStringUTFChars(args->nice_name, nullptr);
         if (!raw) {
             api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-            unloaded = true; return;
+            unloaded = true;
+            return;
         }
 
         std::string pkg(raw);
         env->ReleaseStringUTFChars(args->nice_name, raw);
+
         size_t colon = pkg.find(':');
         if (colon != std::string::npos) pkg = pkg.substr(0, colon);
 
@@ -302,12 +444,16 @@ public:
         if (fd < 0) {
             LOGW("Companion connect failed, unloading");
             api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-            unloaded = true; return;
+            unloaded = true;
+            return;
         }
 
         uint32_t plen = (uint32_t)pkg.size();
         write(fd, &plen, sizeof(plen));
         write(fd, pkg.c_str(), plen);
+
+        uint32_t pid = (uint32_t)getpid();
+        write(fd, &pid, sizeof(pid));
 
         uint8_t resp = 0;
         read(fd, &resp, 1);
@@ -316,7 +462,7 @@ public:
         hide_action = resp;
 
         if (hide_action > 0) {
-            LOGI("Hiding [%s] action=%d", pkg.c_str(), hide_action);
+            LOGI("Hiding [%s] pid=%u action=%d", pkg.c_str(), pid, hide_action);
             api->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
         } else {
             api->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
