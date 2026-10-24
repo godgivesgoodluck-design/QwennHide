@@ -16,6 +16,7 @@ PROP_FILE="$BASE/prop_spoof"
 APPS_FILE="$BASE/apps.list"
 RUNTIME_DIR="$BASE/runtime"
 DENY_TMP="$BASE/.deny.tmp"
+DBG_LOG="$BASE/api-debug.log"
 
 DENY_FILES="
 /data/adb/modules/neozygisk/denylist
