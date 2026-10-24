@@ -195,7 +195,7 @@
 
 <h1>QwennHide</h1>
 <div class="sub">
-    WebUI v3.1.0 — langsung tampilkan aplikasi DenyList dan mode yang sedang berjalan.
+    WebUI v3.1.1 — forced JSON backend, raw response debug, runtime mode display.
 </div>
 
 <div class="card">
@@ -227,6 +227,7 @@
     <div class="toolbar">
         <button onclick="refresh()">Refresh</button>
         <button class="warn" onclick="loadDiag()">Debug Denylist</button>
+        <button class="secondary" onclick="viewRaw()">Lihat Raw API</button>
         <button class="secondary" onclick="resetAllOverrides()">Reset override</button>
     </div>
     <div class="small" style="margin-top:8px">
@@ -236,10 +237,12 @@
 
 <div id="status" class="card hidden"></div>
 <div id="diag" class="card hidden"></div>
+<div id="raw" class="card hidden"></div>
 <div id="list" class="card">Loading...</div>
 
 <script>
-const API = "/data/adb/modules/qwennhide/api.sh";
+const API_SH = "/data/adb/modules/qwennhide/api.sh";
+const CMD = `/system/bin/sh ${API_SH}`;
 
 let data = {
     default_mode: "basic",
@@ -249,9 +252,9 @@ let data = {
 
 let rowStatus = {};
 let rowTimers = {};
-
 let autoTimer = null;
 let pauseUntil = 0;
+let lastRaw = "";
 
 function escapeHtml(s) {
     return String(s ?? "")
@@ -271,7 +274,24 @@ function showStatus(msg, isError = false) {
 
     setTimeout(() => {
         el.className = "card hidden";
-    }, 5000);
+    }, 6000);
+}
+
+function showRaw(title, txt) {
+    const el = document.getElementById("raw");
+    el.className = "card";
+    el.innerHTML = `
+        <b>${escapeHtml(title)}</b>
+        <div class="mono">${escapeHtml(String(txt ?? "").slice(0, 6000))}</div>
+    `;
+}
+
+function hideRaw() {
+    document.getElementById("raw").className = "card hidden";
+}
+
+function hideDiag() {
+    document.getElementById("diag").className = "card hidden";
 }
 
 function setRowStatus(pkg, state, msg) {
@@ -290,28 +310,69 @@ function hasSaving() {
     return Object.values(rowStatus).some(s => s && s.state === "saving");
 }
 
-function pauseAuto(ms = 12000) {
+function pauseAuto(ms = 15000) {
     pauseUntil = Date.now() + ms;
 }
 
-function toText(r) {
+function decodeBytes(bytes) {
+    try {
+        return new TextDecoder().decode(bytes);
+    } catch (_) {
+        return "";
+    }
+}
+
+function looksLikeJson(s) {
+    const t = String(s ?? "").trim();
+    if (!t) return false;
+    if (t.startsWith("{")) return true;
+    const a = t.indexOf("{");
+    const b = t.lastIndexOf("}");
+    return a !== -1 && b !== -1 && b > a;
+}
+
+function toText(r, depth = 0) {
+    if (depth > 4) return "";
     if (r == null) return "";
     if (typeof r === "string") return r;
     if (typeof r === "number" || typeof r === "boolean") return String(r);
-    if (Array.isArray(r)) return JSON.stringify(r);
+
+    if (typeof ArrayBuffer !== "undefined" && r instanceof ArrayBuffer) {
+        return decodeBytes(new Uint8Array(r));
+    }
+
+    if (typeof Uint8Array === "function" && r instanceof Uint8Array) {
+        return decodeBytes(r);
+    }
+
+    if (Array.isArray(r)) {
+        return r.map(x => toText(x, depth + 1)).filter(Boolean).join("\n");
+    }
 
     if (typeof r === "object") {
-        if (typeof r.stdout === "string") return r.stdout;
-        if (typeof r.output === "string") return r.output;
-        if (typeof r.result === "string") return r.result;
-        if (typeof r.data === "string") return r.data;
-        if (typeof r.text === "string") return r.text;
+        const directKeys = ["stdout", "output", "result", "data", "text", "value"];
+        for (const k of directKeys) {
+            if (Object.prototype.hasOwnProperty.call(r, k)) {
+                const v = toText(r[k], depth + 1);
+                if (v) return v;
+            }
+        }
+
+        if (Object.prototype.hasOwnProperty.call(r, "stdout") ||
+            Object.prototype.hasOwnProperty.call(r, "stderr")) {
+            const so = toText(r.stdout, depth + 1);
+            const se = toText(r.stderr, depth + 1);
+
+            if (looksLikeJson(so)) return so;
+            if (so) return so;
+            if (se) return se;
+        }
 
         if (
-            r.apps !== undefined ||
-            r.default_mode !== undefined ||
-            r.ok !== undefined ||
-            r.magisk_bin !== undefined
+            Object.prototype.hasOwnProperty.call(r, "apps") ||
+            Object.prototype.hasOwnProperty.call(r, "default_mode") ||
+            Object.prototype.hasOwnProperty.call(r, "ok") ||
+            Object.prototype.hasOwnProperty.call(r, "magisk_found")
         ) {
             return JSON.stringify(r);
         }
@@ -340,7 +401,10 @@ async function shell(cmd) {
             if (typeof b.exec === "function") {
                 const raw = await b.exec(cmd);
                 const txt = toText(raw);
-                if (txt) return txt;
+                if (txt) {
+                    lastRaw = txt;
+                    return txt;
+                }
             }
         } catch (e) {
             errors.push("exec: " + String(e?.message || e));
@@ -350,34 +414,43 @@ async function shell(cmd) {
             if (typeof b.shell === "function") {
                 const raw = await b.shell(cmd);
                 const txt = toText(raw);
-                if (txt) return txt;
+                if (txt) {
+                    lastRaw = txt;
+                    return txt;
+                }
             }
         } catch (e) {
             errors.push("shell: " + String(e?.message || e));
         }
     }
 
-    throw new Error(
+    const msg =
         "KSU WebUI bridge tidak tersedia atau gagal menjalankan command.\n" +
         "Coba jalankan manual di terminal root:\n\n" +
-        "sh " + API + " list\n\n" +
+        CMD + " list\n\n" +
         "Error bridge:\n" +
-        (errors.join("\n") || "(tidak ada error tambahan)")
-    );
+        (errors.join("\n") || "(tidak ada error tambahan)");
+
+    lastRaw = msg;
+    throw new Error(msg);
 }
 
 function parseJSON(t) {
     if (t && typeof t === "object") return t;
 
-    const text = String(t ?? "");
+    const text = String(t ?? lastRaw ?? "");
     const s = text.indexOf("{");
     const e = text.lastIndexOf("}");
 
-    if (s === -1 || e === -1) {
-        throw new Error("Response bukan JSON:\n" + text.slice(0, 1000));
+    if (s === -1 || e === -1 || e < s) {
+        throw new Error("Response bukan JSON. Raw: " + text.slice(0, 800));
     }
 
-    return JSON.parse(text.slice(s, e + 1));
+    try {
+        return JSON.parse(text.slice(s, e + 1));
+    } catch (err) {
+        throw new Error("JSON tidak valid: " + String(err?.message || err) + "\nRaw: " + text.slice(0, 800));
+    }
 }
 
 async function runApi(cmd) {
@@ -391,7 +464,7 @@ async function runApi(cmd) {
     try {
         obj = parseJSON(out);
     } catch (err) {
-        throw new Error(String(err.message || err));
+        throw new Error(String(err?.message || err));
     }
 
     if (obj && obj.ok === false) {
@@ -429,19 +502,35 @@ function syncGlobalControls() {
     }
 }
 
+function normalizeData() {
+    if (!data || typeof data !== "object") data = {};
+    if (!data.default_mode) data.default_mode = "basic";
+    if (data.prop_spoof == null) data.prop_spoof = "0";
+    if (!Array.isArray(data.apps)) data.apps = [];
+}
+
 async function loadData(clearStatus, manual = false) {
     if (clearStatus) rowStatus = {};
 
-    const out = await shell(`sh ${API} list`);
+    const out = await shell(`${CMD} list`);
     data = parseJSON(out);
+    normalizeData();
 
     syncGlobalControls();
     renderApps();
 
-    if (manual && (!data.apps || data.apps.length === 0)) {
+    if (data.error) {
+        const msg = "Backend warning: " + data.error;
+        showStatus(msg, true);
+        showRaw("Backend error", out);
+        if (!manual) pauseAuto(60000);
+    }
+
+    if (manual && data.apps.length === 0) {
         await loadDiag(true);
-    } else if (data.apps && data.apps.length > 0) {
-        document.getElementById("diag").className = "card hidden";
+    } else if (data.apps.length > 0) {
+        hideDiag();
+        if (!data.error) hideRaw();
     }
 }
 
@@ -453,7 +542,11 @@ async function refresh() {
         list.innerText = "Loading...";
         await loadData(true, true);
     } catch (e) {
-        list.innerHTML = `<div class="error">${escapeHtml(e.message || e)}</div>`;
+        const msg = String(e?.message || e);
+        list.innerHTML = `<div class="error">${escapeHtml(msg)}</div>`;
+        showStatus("Refresh gagal: " + msg, true);
+        showRaw("Refresh gagal", lastRaw || msg);
+        pauseAuto(60000);
     }
 }
 
@@ -465,8 +558,10 @@ async function silentRefresh() {
     try {
         await loadData(false, false);
     } catch (e) {
-        showStatus("Auto refresh gagal: " + (e.message || e), true);
-        pauseAuto(30000);
+        const msg = String(e?.message || e);
+        showStatus("Auto refresh gagal: " + msg, true);
+        showRaw("Auto refresh gagal", lastRaw || msg);
+        pauseAuto(60000);
     }
 }
 
@@ -480,7 +575,7 @@ function renderApps() {
         list.innerHTML =
             `<div class="small">Tidak ada aplikasi di DenyList yang terdeteksi.<br>` +
             `Tambahkan aplikasi ke DenyList Magisk/NeoZygisk, lalu tekan Refresh.<br>` +
-            `Jika masih kosong, tekan <b>Debug Denylist</b>.</div>`;
+            `Jika masih kosong, tekan <b>Debug Denylist</b> atau <b>Lihat Raw API</b>.</div>`;
         return;
     }
 
@@ -496,7 +591,6 @@ function renderApps() {
         pkg.innerText = app.pkg;
         left.appendChild(pkg);
 
-        // Runtime line
         const runtime = document.createElement("div");
         runtime.className = "runtime-line";
 
@@ -517,7 +611,6 @@ function renderApps() {
 
         left.appendChild(runtime);
 
-        // Configured line
         const configured = document.createElement("div");
         configured.className = "configured-line";
 
@@ -603,7 +696,7 @@ async function setAppMode(pkg, mode) {
     renderApps();
 
     try {
-        await runApi(`sh ${API} set ${pkg} ${mode}`);
+        await runApi(`${CMD} set ${pkg} ${mode}`);
 
         const app = (data.apps || []).find(a => a.pkg === pkg);
         if (app) {
@@ -619,8 +712,9 @@ async function setAppMode(pkg, mode) {
         setRowStatus(pkg, "ok", "✓ Mode diterapkan");
         scheduleClear(pkg, 4000);
     } catch (e) {
-        setRowStatus(pkg, "error", "✗ Gagal: " + (e.message || e));
+        setRowStatus(pkg, "error", "✗ Gagal: " + String(e?.message || e));
         scheduleClear(pkg, 9000);
+        showRaw("Set mode gagal", lastRaw || String(e?.message || e));
     }
 
     renderApps();
@@ -630,12 +724,13 @@ async function setDefaultMode(mode) {
     pauseAuto();
 
     try {
-        await runApi(`sh ${API} default ${mode}`);
+        await runApi(`${CMD} default ${mode}`);
         data.default_mode = mode;
         showStatus(`Default mode → ${mode}`);
         renderApps();
     } catch (e) {
-        showStatus("Gagal mengubah default mode: " + (e.message || e), true);
+        showStatus("Gagal mengubah default mode: " + String(e?.message || e), true);
+        showRaw("Default mode gagal", lastRaw || String(e?.message || e));
     }
 }
 
@@ -643,7 +738,7 @@ async function setPropSpoof(v) {
     pauseAuto();
 
     try {
-        const obj = await runApi(`sh ${API} prop ${v}`);
+        const obj = await runApi(`${CMD} prop ${v}`);
         data.prop_spoof = v;
 
         if (obj.reboot_required) {
@@ -652,7 +747,8 @@ async function setPropSpoof(v) {
             showStatus("Prop spoofing diubah.");
         }
     } catch (e) {
-        showStatus("Gagal mengubah prop spoofing: " + (e.message || e), true);
+        showStatus("Gagal mengubah prop spoofing: " + String(e?.message || e), true);
+        showRaw("Prop spoofing gagal", lastRaw || String(e?.message || e));
     }
 }
 
@@ -662,7 +758,7 @@ async function resetAllOverrides() {
     if (!confirm("Hapus semua override per-app?")) return;
 
     try {
-        await runApi(`sh ${API} reset-all`);
+        await runApi(`${CMD} reset-all`);
         (data.apps || []).forEach(a => {
             a.overridden = false;
             a.mode = data.default_mode;
@@ -672,7 +768,23 @@ async function resetAllOverrides() {
         showStatus("Semua override dihapus.");
         renderApps();
     } catch (e) {
-        showStatus("Gagal reset override: " + (e.message || e), true);
+        showStatus("Gagal reset override: " + String(e?.message || e), true);
+        showRaw("Reset override gagal", lastRaw || String(e?.message || e));
+    }
+}
+
+async function viewRaw() {
+    pauseAuto();
+
+    const el = document.getElementById("raw");
+    el.className = "card";
+    el.innerHTML = `<div class="small">Mengambil raw response...</div>`;
+
+    try {
+        const out = await shell(`${CMD} list`);
+        showRaw("Raw api.sh list", out);
+    } catch (e) {
+        showRaw("Raw error", String(e?.message || e));
     }
 }
 
@@ -684,13 +796,14 @@ async function loadDiag(auto = false) {
     el.innerHTML = `<div class="small">Mengambil diagnosis Denylist…</div>`;
 
     try {
-        const out = await shell(`sh ${API} diag`);
+        const out = await shell(`${CMD} diag`);
         const d = parseJSON(out);
         renderDiag(d, auto);
     } catch (e) {
         el.innerHTML =
             `<b class="danger">Debug gagal</b>` +
-            `<div class="error">${escapeHtml(e.message || e)}</div>`;
+            `<div class="error">${escapeHtml(String(e?.message || e))}</div>`;
+        showRaw("Debug gagal", lastRaw || String(e?.message || e));
     }
 }
 
@@ -698,8 +811,8 @@ function renderDiag(d, auto) {
     const el = document.getElementById("diag");
     el.className = "card";
 
+    const magiskFound = d.magisk_found === true || !!d.magisk_bin;
     const magisk = d.magisk_bin || "";
-    const raw = d.magisk_raw || "";
     const count = Number(d.denylist_count || 0);
     const runtimeCount = Number(d.runtime_count || 0);
     const files = d.files || {};
@@ -707,12 +820,12 @@ function renderDiag(d, auto) {
 
     let advice = "";
 
-    if (!magisk && Object.values(files).every(v => v === false)) {
+    if (!magiskFound && Object.values(files).every(v => v === false)) {
         advice =
             `<div class="warn">Tidak ditemukan sumber Denylist.` +
             ` Jika Anda memakai KernelSU/APatch tanpa Magisk, tambahkan package manual ke:</div>` +
             `<div class="mono">/data/adb/qwennhide/umount_list</div>`;
-    } else if (magisk && count === 0) {
+    } else if (magiskFound && count === 0) {
         advice =
             `<div class="warn">Command magisk ditemukan, tetapi hasil parsing Denylist kosong.` +
             ` Bisa jadi format output tidak cocok atau DenyList memang belum diisi.</div>`;
@@ -726,7 +839,7 @@ function renderDiag(d, auto) {
 
     const fileList = Object.entries(files)
         .map(([p, ok]) => `${ok ? "✓" : "✗"} ${escapeHtml(p)}`)
-        .join("<br>") || "<span class='muted'>(tidak ada file sumber)</span>";
+        .join("<br>") || `<span class="small">(tidak ada file sumber)</span>`;
 
     const pkgList = packages.length
         ? packages.map(escapeHtml).join(", ")
@@ -737,7 +850,7 @@ function renderDiag(d, auto) {
 
         <div class="small" style="margin-top:8px">
             <b>magisk binary:</b>
-            <span class="${magisk ? "ok" : "danger"}">${escapeHtml(magisk || "tidak ditemukan")}</span>
+            <span class="${magiskFound ? "ok" : "danger"}">${escapeHtml(magisk || "tidak ditemukan")}</span>
         </div>
 
         <div class="small">
@@ -755,11 +868,6 @@ function renderDiag(d, auto) {
 
         <div class="small" style="margin-top:8px"><b>Package hasil parsing:</b></div>
         <div class="mono">${pkgList}</div>
-
-        ${raw ? `
-            <div class="small" style="margin-top:8px"><b>Raw output magisk --denylist ls:</b></div>
-            <div class="mono">${escapeHtml(raw)}</div>
-        ` : ""}
 
         ${advice}
     `;
