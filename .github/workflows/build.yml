@@ -8,7 +8,7 @@ on:
 
 env:
   MODULE_ID: qwennhide
-  MODULE_VERSION: v3.1.3
+  MODULE_VERSION: v3.1.4
 
 jobs:
   build:
@@ -89,10 +89,12 @@ jobs:
           chmod 755 pkg/action.sh
           chmod 755 pkg/uninstall.sh
           chmod 755 pkg/api.sh
+          chmod 755 pkg/META-INF/com/google/android/update-binary
+          chmod 644 pkg/META-INF/com/google/android/updater-script
           chmod 755 pkg/zygisk
           chmod 755 pkg/zygisk/*.so
           chmod 755 pkg/webroot
-          find pkg/webroot -type f -exec chmod 644 {} \;
+          find pkg/webroot -type f -exec chmod 644 {} +
 
           cd pkg
           zip -r9 ../${{ env.MODULE_ID }}-${{ env.MODULE_VERSION }}.zip .
