@@ -19,7 +19,9 @@
         --danger:#ff5c5c;
         --border:#2a2f3a;
     }
+
     *{box-sizing:border-box}
+
     body{
         margin:0;
         padding:16px;
@@ -27,8 +29,15 @@
         color:var(--text);
         font-family:system-ui,-apple-system,sans-serif;
     }
+
     h1{margin:0 0 4px;font-size:22px}
-    .sub{color:var(--muted);font-size:12px;margin-bottom:14px}
+
+    .sub{
+        color:var(--muted);
+        font-size:12px;
+        margin-bottom:14px;
+    }
+
     .card{
         background:var(--card);
         border:1px solid var(--border);
@@ -36,6 +45,7 @@
         padding:14px;
         margin-bottom:14px;
     }
+
     .row{
         display:flex;
         align-items:center;
@@ -43,6 +53,7 @@
         gap:10px;
         margin:8px 0;
     }
+
     select,input[type="text"]{
         width:100%;
         background:#0d1015;
@@ -52,6 +63,7 @@
         padding:10px;
         outline:none;
     }
+
     button{
         background:var(--accent);
         color:#fff;
@@ -60,32 +72,81 @@
         padding:10px 12px;
         font-weight:600;
     }
+
     button.secondary{background:#263042}
     button.warn{background:#7a5a1f}
+
     .toolbar{
         display:flex;
         gap:8px;
         margin-top:10px;
         flex-wrap:wrap;
     }
+
     .app{
         display:flex;
-        align-items:center;
+        align-items:flex-start;
         justify-content:space-between;
         gap:12px;
         padding:12px 0;
         border-bottom:1px solid var(--border);
     }
+
     .app:last-child{border-bottom:0}
-    .app-left{flex:1;min-width:0}
-    .pkg{font-size:13px;word-break:break-all}
-    .app-right{flex-shrink:0}
-    select.app-mode{width:auto;min-width:140px;padding:8px}
-    .app-status{font-size:11px;margin-top:5px}
+
+    .app-left{
+        flex:1;
+        min-width:0;
+    }
+
+    .pkg{
+        font-size:13px;
+        word-break:break-all;
+        font-weight:600;
+    }
+
+    .runtime-line{
+        font-size:12px;
+        margin-top:6px;
+        line-height:1.35;
+    }
+
+    .runtime-line.running{color:var(--ok)}
+    .runtime-line.stale{color:var(--warn)}
+    .runtime-line.idle{color:var(--muted)}
+
+    .configured-line{
+        font-size:11px;
+        color:var(--muted);
+        margin-top:4px;
+    }
+
+    .app-right{
+        flex-shrink:0;
+    }
+
+    select.app-mode{
+        width:auto;
+        min-width:150px;
+        padding:8px;
+    }
+
+    .app-status{
+        font-size:11px;
+        margin-top:5px;
+    }
+
     .app-status.saving{color:var(--muted)}
     .app-status.ok{color:var(--ok)}
     .app-status.error{color:var(--danger)}
-    .badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+
+    .badges{
+        display:flex;
+        gap:6px;
+        flex-wrap:wrap;
+        margin-top:6px;
+    }
+
     .badge{
         font-size:11px;
         border-radius:999px;
@@ -93,17 +154,26 @@
         background:#232a36;
         color:var(--muted);
     }
+
     .badge.override{color:var(--accent)}
-    .small{font-size:12px;color:var(--muted);line-height:1.4}
+
+    .small{
+        font-size:12px;
+        color:var(--muted);
+        line-height:1.4;
+    }
+
     .warn{color:var(--warn)}
     .ok{color:var(--ok)}
     .danger{color:var(--danger)}
+
     .error{
         color:var(--danger);
         white-space:pre-wrap;
         font-family:monospace;
         font-size:12px;
     }
+
     .mono{
         font-family:monospace;
         font-size:11px;
@@ -117,6 +187,7 @@
         max-height:220px;
         overflow:auto;
     }
+
     .hidden{display:none}
 </style>
 </head>
@@ -124,7 +195,7 @@
 
 <h1>QwennHide</h1>
 <div class="sub">
-    WebUI v3.0.1 — hanya menampilkan aplikasi yang terdeteksi ada di DenyList.
+    WebUI v3.1.0 — langsung tampilkan aplikasi DenyList dan mode yang sedang berjalan.
 </div>
 
 <div class="card">
@@ -153,15 +224,13 @@
 </div>
 
 <div class="card">
-    <input id="search" type="text" placeholder="Cari package di DenyList..." oninput="renderApps()">
     <div class="toolbar">
         <button onclick="refresh()">Refresh</button>
         <button class="warn" onclick="loadDiag()">Debug Denylist</button>
         <button class="secondary" onclick="resetAllOverrides()">Reset override</button>
     </div>
     <div class="small" style="margin-top:8px">
-        Sumber: <code>magisk --denylist ls</code>, file denylist NeoZygisk/ZygiskNext, dan
-        <code>/data/adb/qwennhide/umount_list</code>.
+        Mode berjalan dicatat saat aplikasi di-launch oleh Zygisk. Jika aplikasi belum dibuka setelah install/reboot, statusnya akan tampil sebagai belum terdeteksi berjalan.
     </div>
 </div>
 
@@ -181,6 +250,9 @@ let data = {
 let rowStatus = {};
 let rowTimers = {};
 
+let autoTimer = null;
+let pauseUntil = 0;
+
 function escapeHtml(s) {
     return String(s ?? "")
         .replace(/&/g, "&amp;")
@@ -196,6 +268,7 @@ function showStatus(msg, isError = false) {
     el.innerHTML = isError
         ? `<div class="error">${escapeHtml(msg)}</div>`
         : `<div class="small">${escapeHtml(msg)}</div>`;
+
     setTimeout(() => {
         el.className = "card hidden";
     }, 5000);
@@ -213,11 +286,18 @@ function scheduleClear(pkg, delay) {
     }, delay);
 }
 
+function hasSaving() {
+    return Object.values(rowStatus).some(s => s && s.state === "saving");
+}
+
+function pauseAuto(ms = 12000) {
+    pauseUntil = Date.now() + ms;
+}
+
 function toText(r) {
     if (r == null) return "";
     if (typeof r === "string") return r;
     if (typeof r === "number" || typeof r === "boolean") return String(r);
-
     if (Array.isArray(r)) return JSON.stringify(r);
 
     if (typeof r === "object") {
@@ -329,38 +409,72 @@ function cap(s) {
     return String(s || "").charAt(0).toUpperCase() + String(s || "").slice(1);
 }
 
+function formatAge(seconds) {
+    const s = Number(seconds || 0);
+    if (s < 60) return `${s} dtk`;
+    if (s < 3600) return `${Math.floor(s / 60)} mnt`;
+    return `${Math.floor(s / 3600)} jam`;
+}
+
+function syncGlobalControls() {
+    const dm = document.getElementById("defaultMode");
+    const ps = document.getElementById("propSpoof");
+
+    if (document.activeElement !== dm) {
+        dm.value = data.default_mode || "basic";
+    }
+
+    if (document.activeElement !== ps) {
+        ps.value = data.prop_spoof || "0";
+    }
+}
+
+async function loadData(clearStatus, manual = false) {
+    if (clearStatus) rowStatus = {};
+
+    const out = await shell(`sh ${API} list`);
+    data = parseJSON(out);
+
+    syncGlobalControls();
+    renderApps();
+
+    if (manual && (!data.apps || data.apps.length === 0)) {
+        await loadDiag(true);
+    } else if (data.apps && data.apps.length > 0) {
+        document.getElementById("diag").className = "card hidden";
+    }
+}
+
 async function refresh() {
     const list = document.getElementById("list");
-    rowStatus = {};
+    pauseAuto();
 
     try {
         list.innerText = "Loading...";
-        const out = await shell(`sh ${API} list`);
-        data = parseJSON(out);
-
-        document.getElementById("defaultMode").value = data.default_mode || "basic";
-        document.getElementById("propSpoof").value = data.prop_spoof || "0";
-
-        renderApps();
-
-        if (!data.apps || data.apps.length === 0) {
-            await loadDiag(true);
-        } else {
-            document.getElementById("diag").className = "card hidden";
-        }
+        await loadData(true, true);
     } catch (e) {
         list.innerHTML = `<div class="error">${escapeHtml(e.message || e)}</div>`;
     }
 }
 
+async function silentRefresh() {
+    if (document.visibilityState !== "visible") return;
+    if (Date.now() < pauseUntil) return;
+    if (hasSaving()) return;
+
+    try {
+        await loadData(false, false);
+    } catch (e) {
+        showStatus("Auto refresh gagal: " + (e.message || e), true);
+        pauseAuto(30000);
+    }
+}
+
 function renderApps() {
-    const q = document.getElementById("search").value.toLowerCase();
     const list = document.getElementById("list");
     list.innerHTML = "";
 
-    const apps = (data.apps || []).filter(a =>
-        String(a.pkg || "").toLowerCase().includes(q)
-    );
+    const apps = data.apps || [];
 
     if (!apps.length) {
         list.innerHTML =
@@ -381,6 +495,39 @@ function renderApps() {
         pkg.className = "pkg";
         pkg.innerText = app.pkg;
         left.appendChild(pkg);
+
+        // Runtime line
+        const runtime = document.createElement("div");
+        runtime.className = "runtime-line";
+
+        if (app.runtime_running) {
+            runtime.classList.add("running");
+            runtime.innerText =
+                `▶ Sedang berjalan: ${cap(app.runtime_mode)} ` +
+                `(PID ${app.runtime_pid}, ${formatAge(app.runtime_age)} lalu)`;
+        } else if (app.runtime_mode) {
+            runtime.classList.add("stale");
+            runtime.innerText =
+                `⏸ Tidak terdeteksi berjalan. Terakhir: ${cap(app.runtime_mode)} ` +
+                `(${formatAge(app.runtime_age)} lalu)`;
+        } else {
+            runtime.classList.add("idle");
+            runtime.innerText = `⏸ Belum terdeteksi berjalan sejak module aktif.`;
+        }
+
+        left.appendChild(runtime);
+
+        // Configured line
+        const configured = document.createElement("div");
+        configured.className = "configured-line";
+
+        if (app.overridden) {
+            configured.innerText = `Mode tersimpan: ${cap(app.mode)} (override per-app)`;
+        } else {
+            configured.innerText = `Mode tersimpan: Default (${cap(data.default_mode)})`;
+        }
+
+        left.appendChild(configured);
 
         if (app.overridden) {
             const badges = document.createElement("div");
@@ -407,7 +554,10 @@ function renderApps() {
 
         const sel = document.createElement("select");
         sel.className = "app-mode";
-        sel.onchange = () => setAppMode(app.pkg, sel.value);
+        sel.onchange = () => {
+            pauseAuto();
+            setAppMode(app.pkg, sel.value);
+        };
 
         for (const v of ["default", "basic", "aggressive", "persistent"]) {
             const o = document.createElement("option");
@@ -433,6 +583,8 @@ function renderApps() {
 }
 
 async function setAppMode(pkg, mode) {
+    pauseAuto();
+
     if (!validPkg(pkg)) {
         setRowStatus(pkg, "error", "✗ Package tidak valid");
         scheduleClear(pkg, 6000);
@@ -475,6 +627,8 @@ async function setAppMode(pkg, mode) {
 }
 
 async function setDefaultMode(mode) {
+    pauseAuto();
+
     try {
         await runApi(`sh ${API} default ${mode}`);
         data.default_mode = mode;
@@ -486,6 +640,8 @@ async function setDefaultMode(mode) {
 }
 
 async function setPropSpoof(v) {
+    pauseAuto();
+
     try {
         const obj = await runApi(`sh ${API} prop ${v}`);
         data.prop_spoof = v;
@@ -501,6 +657,8 @@ async function setPropSpoof(v) {
 }
 
 async function resetAllOverrides() {
+    pauseAuto();
+
     if (!confirm("Hapus semua override per-app?")) return;
 
     try {
@@ -509,6 +667,7 @@ async function resetAllOverrides() {
             a.overridden = false;
             a.mode = data.default_mode;
         });
+
         rowStatus = {};
         showStatus("Semua override dihapus.");
         renderApps();
@@ -518,6 +677,8 @@ async function resetAllOverrides() {
 }
 
 async function loadDiag(auto = false) {
+    pauseAuto();
+
     const el = document.getElementById("diag");
     el.className = "card";
     el.innerHTML = `<div class="small">Mengambil diagnosis Denylist…</div>`;
@@ -540,6 +701,7 @@ function renderDiag(d, auto) {
     const magisk = d.magisk_bin || "";
     const raw = d.magisk_raw || "";
     const count = Number(d.denylist_count || 0);
+    const runtimeCount = Number(d.runtime_count || 0);
     const files = d.files || {};
     const packages = d.packages || [];
 
@@ -557,7 +719,9 @@ function renderDiag(d, auto) {
     } else if (count > 0 && packages.length === 0) {
         advice = `<div class="warn">Data tidak konsisten: count > 0 tetapi packages kosong.</div>`;
     } else if (count > 0) {
-        advice = `<div class="ok">Denylist terdeteksi. Jika WebUI tetap kosong, kemungkinan cache WebUI lama. Reinstall module atau clear cache manager.</div>`;
+        advice =
+            `<div class="ok">Denylist terdeteksi.` +
+            ` Jika WebUI tetap kosong, kemungkinan cache WebUI lama. Reinstall module atau clear cache manager.</div>`;
     }
 
     const fileList = Object.entries(files)
@@ -581,6 +745,11 @@ function renderDiag(d, auto) {
             <span class="${count > 0 ? "ok" : "warn"}">${count}</span>
         </div>
 
+        <div class="small">
+            <b>runtime state tercatat:</b>
+            <span class="${runtimeCount > 0 ? "ok" : "muted"}">${runtimeCount}</span>
+        </div>
+
         <div class="small" style="margin-top:8px"><b>File sumber:</b></div>
         <div class="mono">${fileList}</div>
 
@@ -596,7 +765,21 @@ function renderDiag(d, auto) {
     `;
 }
 
-refresh();
+function startAutoRefresh() {
+    if (autoTimer) clearInterval(autoTimer);
+
+    autoTimer = setInterval(() => {
+        silentRefresh();
+    }, 5000);
+}
+
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+        silentRefresh();
+    }
+});
+
+refresh().then(startAutoRefresh);
 </script>
 
 </body>
