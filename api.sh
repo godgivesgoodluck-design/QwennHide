@@ -198,6 +198,23 @@ fallback_ok_error() {
     printf '{"ok":false,"error":"%s"}\n' "$1"
 }
 
+dbg_log() {
+    _DL_TS=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)
+    [ -n "$_DL_TS" ] || _DL_TS="-"
+
+    printf '[%s] %s\n' "$_DL_TS" "$*" >> "$DBG_LOG" 2>/dev/null
+
+    _DL_SZ=$(wc -c < "$DBG_LOG" 2>/dev/null)
+    case "$_DL_SZ" in
+        ''|*[!0-9]*) _DL_SZ=0 ;;
+    esac
+
+    if [ "$_DL_SZ" -gt 262144 ]; then
+        tail -n 200 "$DBG_LOG" > "$DBG_LOG.tmp" 2>/dev/null
+        mv -f "$DBG_LOG.tmp" "$DBG_LOG" 2>/dev/null
+    fi
+}
+
 # ─── Commands ──────────────────────────────────────────────────────────
 
 cmd_list() {
@@ -349,20 +366,38 @@ cmd_diag() {
 }
 
 cmd_set() {
-    _CS_PKG="$1"
-    _CS_MODE="$2"
+    _CS_RAW1="$1"
+    _CS_RAW2="$2"
+    _CS_PKG=""
+    _CS_MODE=""
+
+    if [ -n "$_CS_RAW2" ]; then
+        _CS_PKG="$_CS_RAW1"
+        _CS_MODE="$_CS_RAW2"
+    else
+        case "$_CS_RAW1" in
+            *:*)
+                _CS_PKG=${_CS_RAW1%:*}
+                _CS_MODE=${_CS_RAW1##*:}
+                ;;
+        esac
+    fi
+
+    dbg_log "SET raw1=[$_CS_RAW1] raw2=[$_CS_RAW2] pkg=[$_CS_PKG] mode=[$_CS_MODE]"
 
     ensure
 
-    valid_pkg "$_CS_PKG" || {
+    if ! valid_pkg "$_CS_PKG"; then
+        dbg_log "SET invalid_package pkg=[$_CS_PKG]"
         printf '{"ok":false,"error":"invalid_package"}\n'
         return 1
-    }
+    fi
 
-    valid_mode "$_CS_MODE" || {
+    if ! valid_mode "$_CS_MODE"; then
+        dbg_log "SET invalid_mode pkg=[$_CS_PKG] mode=[$_CS_MODE]"
         printf '{"ok":false,"error":"invalid_mode"}\n'
         return 1
-    }
+    fi
 
     _CS_TMP="$APPS_FILE.tmp"
 
@@ -372,18 +407,22 @@ cmd_set() {
         printf '%s|%s\n' "$_CS_PKG" "$_CS_MODE" >> "$_CS_TMP" 2>/dev/null
     fi
 
-    mv -f "$_CS_TMP" "$APPS_FILE" 2>/dev/null || {
+    if ! mv -f "$_CS_TMP" "$APPS_FILE" 2>/dev/null; then
+        dbg_log "SET write_failed pkg=[$_CS_PKG] mode=[$_CS_MODE]"
         printf '{"ok":false,"error":"write_failed"}\n'
         return 1
-    }
+    fi
 
     chmod 600 "$APPS_FILE" 2>/dev/null
+
+    dbg_log "SET ok pkg=[$_CS_PKG] mode=[$_CS_MODE]"
     printf '{"ok":true}\n'
 }
 
 cmd_default() {
     _CDFT_MODE="$1"
 
+    dbg_log "DEFAULT mode=[$_CDFT_MODE]"
     ensure
 
     case "$_CDFT_MODE" in
@@ -406,6 +445,7 @@ cmd_default() {
 cmd_prop() {
     _CPROP_VAL="$1"
 
+    dbg_log "PROP val=[$_CPROP_VAL]"
     ensure
 
     case "$_CPROP_VAL" in
@@ -426,6 +466,7 @@ cmd_prop() {
 }
 
 cmd_reset_all() {
+    dbg_log "RESET_ALL"
     ensure
 
     : > "$APPS_FILE" 2>/dev/null || {
